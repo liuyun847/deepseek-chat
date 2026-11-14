@@ -4,6 +4,7 @@ import { ApiError, streamMessage } from '../api/client.js'
 import type { CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
+import { getActivePromptContent } from '../prompts.js'
 import { useSettings } from '../settings.js'
 import { appendBranch, getVisibleMessages, normalizeSession, selectVersion } from './branches.js'
 import * as db from './db.js'
@@ -32,8 +33,6 @@ import {
   type UserMessage,
 } from './types.js'
 
-/** 所有生成请求统一携带的助手身份说明 */
-const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
 /** 内容检查用 API 默认档位 low（等同不传 safety_check）；API 没有彻底关闭内容检查的选项 */
@@ -1004,7 +1003,8 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           apiKey ?? '',
           {
             model: initial.model ?? model,
-            system: SYSTEM_PROMPT,
+            // 系统提示词在发请求这一刻取值：切换提示词只影响之后的请求，已发送的消息不重写
+            system: getActivePromptContent(),
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
             // thinking.type 显式决定开关，effort 只决定强度；关闭思考时不传，避免被误读为开启

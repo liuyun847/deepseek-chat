@@ -457,3 +457,180 @@
     max-width: 100%;
   }
 }
+.prompts {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 窄屏时标题区与选择区换行，避免说明文字被挤成一列 */
+.promptActiveCell {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.promptActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.promptSelect {
+  max-width: min(285px, 100%);
+}
+
+.promptList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.promptItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  background-color: transparent;
+
+  &.promptItemActive {
+    border-color: var(--dsw-alias-brand-primary);
+  }
+}
+
+.promptHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.promptName {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.promptBadge {
+  flex-shrink: 0;
+  padding: 0 8px;
+  border-radius: 100px;
+  background-color: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+
+  &.promptBadgeActive {
+    background-color: var(--dsw-specific-selector);
+    color: var(--dsw-alias-brand-text);
+  }
+}
+
+.promptItemActions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.promptPreview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.promptEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 12px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+}
+
+.promptField {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldLabel {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.fieldInput,
+.fieldTextarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  outline: none;
+  background-color: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out);
+
+  &::placeholder {
+    color: var(--dsw-alias-label-caption);
+  }
+
+  &:focus {
+    border-color: var(--dsw-alias-brand-primary);
+  }
+}
+
+.fieldTextarea {
+  min-height: 84px;
+  resize: vertical;
+}
+
+.promptEditorFooter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media not all and (min-width: 768px) {
+  .promptActiveCell .text {
+    flex-basis: 100%;
+    padding-right: 0;
+  }
+
+  .promptActions {
+    width: 100%;
+  }
+
+  .promptSelect {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+
+  .promptItemActions > button {
+    width: 40px;
+    height: 40px;
+  }
+}

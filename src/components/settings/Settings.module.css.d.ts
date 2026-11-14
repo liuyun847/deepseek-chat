@@ -33,6 +33,25 @@ declare const styles: {
   readonly "importConfirmText": string;
   readonly "deleteConfirm": string;
   readonly "deleteActions": string;
+  readonly "prompts": string;
+  readonly "promptActiveCell": string;
+  readonly "promptActions": string;
+  readonly "promptSelect": string;
+  readonly "promptList": string;
+  readonly "promptItem": string;
+  readonly "promptItemActive": string;
+  readonly "promptHead": string;
+  readonly "promptName": string;
+  readonly "promptBadge": string;
+  readonly "promptBadgeActive": string;
+  readonly "promptItemActions": string;
+  readonly "promptPreview": string;
+  readonly "promptEditor": string;
+  readonly "promptField": string;
+  readonly "fieldLabel": string;
+  readonly "fieldInput": string;
+  readonly "fieldTextarea": string;
+  readonly "promptEditorFooter": string;
 };
 export = styles;
 
