@@ -104,6 +104,13 @@
   opacity: 1;
 }
 
+/* 触屏设备没有 hover，操作区常显，否则历史回答的「重新生成」入口不可发现 */
+@media (hover: none) {
+  .actions {
+    opacity: 1;
+  }
+}
+
 .continueButton {
   margin-left: auto;
 }

@@ -1,6 +1,7 @@
 import { useTranslate } from '../../i18n/index.js'
 import clsx from 'clsx'
 import { memo } from 'react'
+import { useIsMobile } from '../../app/viewport.js'
 import { IconRefreshOutline16, IconWarningOutline16 } from '../base/icons.js'
 import { describeReply } from '../../services/chat/describe.js'
 import { canContinueReply } from '../../services/chat/reply.js'
@@ -42,6 +43,7 @@ export const AssistantMessage = memo(function AssistantMessage({
   onSelectVersion: SelectMessageVersion
 }) {
   const t = useTranslate()
+  const isMobile = useIsMobile()
   const view = useReplyView(message, streaming)
   const panelEntry = useSearchPanel((state) => state.entry)
   const notice = streaming ? null : describeReply(message)
@@ -139,7 +141,8 @@ export const AssistantMessage = memo(function AssistantMessage({
       {streaming ? null : (
         <div className={styles.bottom}>
           <BranchSwitcher versions={versions} disabled={busy} onSelect={onSelectVersion} />
-          <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
+          {/* 悬停才显示操作区；最后一条与移动端（无 hover）常显，保证重新生成入口可发现 */}
+          <div className={clsx(styles.actions, (isLast || isMobile) && styles.alwaysShow)}>
             {copyText ? <CopyButton text={copyText} /> : null}
             <IconButton
               icon={<IconRefreshOutline16 />}

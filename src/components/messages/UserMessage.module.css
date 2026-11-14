@@ -70,6 +70,13 @@
   opacity: 1;
 }
 
+/* 触屏设备没有 hover，操作区常显，否则历史消息的「编辑」入口不可发现 */
+@media (hover: none) {
+  .actions {
+    opacity: 1;
+  }
+}
+
 .editor {
   width: 100%;
   box-sizing: border-box;

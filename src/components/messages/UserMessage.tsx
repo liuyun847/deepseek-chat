@@ -112,7 +112,8 @@ export const UserMessage = memo(function UserMessage({
         <>
           {message.content ? <div className={styles.bubble}>{message.content}</div> : null}
           <div className={styles.bottom}>
-            <div className={clsx(styles.actions, isLast && styles.alwaysShow)}>
+            {/* 悬停才显示操作区；最后一条与移动端（无 hover）常显，保证编辑入口可发现 */}
+            <div className={clsx(styles.actions, (isLast || isMobile) && styles.alwaysShow)}>
               {message.content ? <CopyButton text={message.content} /> : null}
               <IconButton
                 icon={<IconEditOutline16 />}
