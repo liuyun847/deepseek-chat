@@ -57,6 +57,24 @@ It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-d
 
 Sync is record-granular (chat, message) last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
 
+## Android APK
+
+The repo can also be packaged as an installable APK: the same `dist/` output is embedded in the APK's assets and served to a WebView from a virtual `https://dsapp.local` origin (a real secure origin, so localStorage and IndexedDB work). No Gradle, no Maven — the chain is aapt2 → javac → d8 → jar → zipalign → apksigner, driven by `tools/build-apk.ps1` (Windows, PowerShell 7).
+
+```powershell
+.\tools\setup-toolchain.ps1                     # one-off: JDK 17 + build-tools 35.0.1 + android-35 into %USERPROFILE%\.devtools
+pnpm --config.shell-emulator=true build       # frontend -> dist/
+.\tools\build-apk.ps1                          # -> dist-apk\deepseek-chat.apk
+.\tools\verify-apk.ps1                         # 32 assertions on the artifact
+adb install -r dist-apk\deepseek-chat.apk
+```
+
+- The API key is **not** baked into the APK. Enter it in Settings; it is stored in localStorage of the app origin. Nothing else is injected at build time.
+- Package name stays `ds.app` and the signing key is `android\debug.keystore` (git-ignored), so a new APK can be installed **over** an existing install. Lose that keystore and you must uninstall first, which wipes local chats.
+- `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.1.1 → 101). Bump `package.json` before shipping.
+- `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), only the `INTERNET` permission.
+- `android/` holds the shell: `MainActivity.java` (assets serving, external links, file picker, SAF export, back key), `shell.js` (patch injected into the page for the back key and blob downloads), `res/`, `AndroidManifest.xml`. Nothing in `src/` or `rspack.config.ts` is Android-specific: the shell works because the build uses `publicPath: 'auto'`.
+
 ## Development
 
 | Command       | Description                  |

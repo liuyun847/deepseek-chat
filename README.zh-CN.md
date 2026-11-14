@@ -57,6 +57,24 @@ node sync-server/server.mjs --port 7788
 
 同步按记录（会话、消息）粒度做 LWW：两边独有的记录都会保留，同一条记录两端都改过时保留最后修改的那一版；删除用墓碑同步，不会被另一端拉回来；分支树字段（`parentId` / `selectedChildId` / `rootMessageId`）原样同步。附件只同步文件信息，不含原件。接口与冲突规则见 [sync-server/README.md](sync-server/README.md)。
 
+## 安卓 APK
+
+同一份 `dist/` 也可以打成可安装的 APK：前端资源放进 APK 的 assets，由 WebView 以虚拟源 `https://dsapp.local` 供给（真正的安全源，localStorage 与 IndexedDB 都可用）。零 Gradle、零 Maven，链路是 aapt2 → javac → d8 → jar → zipalign → apksigner，由 `tools/build-apk.ps1` 驱动（Windows，PowerShell 7）。
+
+```powershell
+.\tools\setup-toolchain.ps1                     # 一次性：JDK 17 + build-tools 35.0.1 + android-35 装到 %USERPROFILE%\.devtools
+pnpm --config.shell-emulator=true build       # 前端 -> dist/
+.\tools\build-apk.ps1                          # -> dist-apk\deepseek-chat.apk
+.\tools\verify-apk.ps1                         # 32 项产物校验
+adb install -r dist-apk\deepseek-chat.apk
+```
+
+- API Key **不写进 APK**：在设置里填，存在应用源的 localStorage 里。构建期不注入任何密钥。
+- 包名沿用 `ds.app`，签名私钥是 `android\debug.keystore`（已 gitignore），因此新包能**覆盖升级**已装版本。丢了这份私钥就只能先卸载，本地聊天记录会一起丢。
+- `versionName` 取自 `package.json`；`versionCode` 按 `major*10000 + minor*100 + patch` 折算（0.1.1 → 101）。发版前先改 `package.json`。
+- `minSdk 26`、`targetSdk 34`（升到 35 会被 Android 15 强制 edge-to-edge），权限只有 `INTERNET` 一条。
+- `android/` 是壳层：`MainActivity.java`（assets 供给、外链、选文件、SAF 导出、返回键）、`shell.js`（注入页面的补丁）、`res/`、`AndroidManifest.xml`。
+
 ## 开发
 
 | 命令          | 用途                |

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  网络安全配置。
+
+  为什么必须放开明文
+  ==================
+  多端同步连的是 http://192.168.x.x:7788 这类明文地址（sync-server/server.mjs）。
+  自签证书 WebView 会直接判无效，要做成 https 就得再套一层证书分发，那是另一套东西。
+  Android 的 cleartext 策略在 targetSdk 28+ 默认禁止，所以在这里放开。
+
+  代价与收口
+  ==========
+  放开之后 WebView 理论上能向任意 http 主机发明文请求。旧版把收口放在
+  app\js\sync-net.js 的私有网段白名单上；**本版前端没有这层校验**
+  （src/services/sync/api.ts 只校验协议是 http/https），也就是说
+  用户把同步地址填成任意 http 地址都会真的发出去 —— 这个能力的边界是「用户自己填的地址」，
+  不是「只允许局域网」。要恢复旧版的收口，得在前端加白名单，不能只改这个 XML。
+
+  为什么不用 <domain> 白名单：它只认域名与 IP 字面量、不接受 CIDR 写法，
+  选不出"只放行私有段"这种规则；写死具体 IP 又会在路由器换地址段后失效。
+
+  https 完全不受影响：DeepSeek API 走的仍是 https + 系统信任链，系统 CA 一份没动。
+  tools\verify-apk.ps1 有对应校验，防止这份配置被改回去而没人发现。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

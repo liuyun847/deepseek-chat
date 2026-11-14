@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      页面底色，与前端变量 dsw-alias-bg-base 对齐：浅色 #FFFFFF、深色 #0F1115（见 values-night）。
+      XML 注释里不能出现连续两个减号，所以这里不写变量名的前缀那两横。
+    -->
+    <color name="app_bg">#FFFFFF</color>
+
+    <!-- 桌面图标用色（渐变蓝底 + 白色图形），沿用旧版配色，与包名一起保持"同一个应用"的观感 -->
+    <color name="brand_start">#2B36A8</color>
+    <color name="brand_end">#6B4DFE</color>
+    <color name="dot">#3A47DD</color>
+</resources>

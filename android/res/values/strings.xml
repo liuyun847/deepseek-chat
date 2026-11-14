@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 桌面图标名。沿用旧版名称：包名没换，用户看到的就是同一个应用。 -->
+    <string name="app_name">DeepSeek</string>
+</resources>
