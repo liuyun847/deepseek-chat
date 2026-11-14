@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../../utils/id.js'
 import { ApiError, streamMessage } from '../api/client.js'
-import type { ChatModel, CreateMessageRequest } from '../api/types.js'
+import type { CreateMessageRequest } from '../api/types.js'
 import { extractFileIds, getFileErrorCode, isRetryableApiError } from '../api/errors.js'
 import { cancelUpload, describeUploadError, uploadAttachment, useUploads } from '../attachments.js'
 import { useSettings } from '../settings.js'
@@ -32,14 +32,12 @@ import {
   type UserMessage,
 } from './types.js'
 
-/** deepseek-flash 同时支持深度思考与图片输入 */
-const MODEL: ChatModel = 'deepseek-flash'
 /** 所有生成请求统一携带的助手身份说明 */
 const SYSTEM_PROMPT = '该助手为DeepSeek，由深度求索公司创造。'
 /** 保留最近打开的详情；当前会话、生成中及尚未成功保存的会话不淘汰。 */
 const SESSION_CACHE_LIMIT = 5
-/** 安全审核固定开启，所有请求都走扩展模式 */
-const SAFETY_CHECK = { level: 'high' } as const
+/** 内容检查用 API 默认档位 low（等同不传 safety_check）；API 没有彻底关闭内容检查的选项 */
+const SAFETY_CHECK = { level: 'low' } as const
 /** 服务端判定 file_id 失效后，重新补传并重发的最多次数（不含首次请求） */
 const FILE_RETRY_LIMIT = 2
 /** 退避基数，第 n 次重试等待 2^n 倍；连续失败达到上限就放弃，把原始报错展示出来 */
@@ -253,15 +251,19 @@ export const bindChatPersistence = () => {
   }
 }
 
-/** 按当前开关创建回复：深度思考对应 thinking，智能搜索控制 deepseek_web_search。 */
+/**
+ * 按当前设置创建回复：模型、推理强度与开关都取用设置里的当前值并在此快照，
+ * 之后改设置不会影响已发出的回复。
+ */
 const createReply = (): AssistantMessage => {
-  const { thinking, search } = useSettings.getState()
+  const { model, reasoningEffort, thinking, search } = useSettings.getState()
   return {
     id: createId(),
     role: 'assistant',
     createdAt: Date.now(),
-    model: MODEL,
+    model,
     thinking,
+    effort: reasoningEffort,
     search,
     prefix: true,
     status: 'pending',
@@ -705,12 +707,13 @@ export const continueReply = (sessionId: string, messageId: string) => {
   ) {
     return
   }
-  const { thinking, search } = useSettings.getState()
+  const { model, reasoningEffort, thinking, search } = useSettings.getState()
   const reply: AssistantMessage = {
     ...previous,
-    // 未记录请求配置的回复，续写时使用默认模型和当前开关。
-    model: previous.model ?? MODEL,
+    // 未记录请求配置的回复，续写时使用当前模型、强度和开关。
+    model: previous.model ?? model,
     thinking: previous.thinking ?? thinking,
+    effort: previous.effort ?? reasoningEffort,
     search: previous.search ?? search,
     status: 'pending',
     stopReason: undefined,
@@ -996,13 +999,18 @@ const streamReply = async (sessionId: string, initial: AssistantMessage, request
           initial.thinking ?? false,
           latestReminder
         )
+        const { apiKey, model, reasoningEffort } = useSettings.getState()
         const events = streamMessage(
-          useSettings.getState().apiKey ?? '',
+          apiKey ?? '',
           {
-            model: initial.model ?? MODEL,
+            model: initial.model ?? model,
             system: SYSTEM_PROMPT,
             messages,
             thinking: { type: initial.thinking ? 'enabled' : 'disabled' },
+            // thinking.type 显式决定开关，effort 只决定强度；关闭思考时不传，避免被误读为开启
+            ...(initial.thinking
+              ? { output_config: { effort: initial.effort ?? reasoningEffort } }
+              : {}),
             safety_check: SAFETY_CHECK,
             tools: serverTools(initial.search ?? false),
             ...(titleRequests.has(controller) ? { title: { enabled: true } } : {}),

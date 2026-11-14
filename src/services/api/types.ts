@@ -2,9 +2,34 @@
  * Messages API（Anthropic 兼容格式）协议类型，只取本应用用到的部分。
  * 文档：https://api-docs.deepseek.com/zh-cn/api/create-message
  * 声明 deepseek_web_search / deepseek_read_url 或设置 safety_check.level 为 high 时进入扩展模式。
+ * safety_check.level：high 开启基础风控（审核模型输入与输出），low 为 API 默认内容检查（等同不传）。
  */
 
-export type ChatModel = 'deepseek-flash' | 'deepseek-v4-pro'
+/** 模型 ID：可用模型以 GET /models 返回为准，默认 deepseek-flash */
+export type ChatModel = string
+
+/**
+ * 推理强度档位：Anthropic 兼容端点用 output_config.effort 传，官方只有 low / high / max 三个正式档位，
+ * 默认 high；兼容别名 minimal→low、medium/xhigh→high、ultra→max 不对外暴露。
+ */
+export type ReasoningEffort = 'low' | 'high' | 'max'
+
+// ---------- 请求：模型列表 ----------
+
+/** GET /models 的单个模型；name 用于展示，effort 给出该模型支持的强度档位 */
+export type ModelInfo = {
+  id: string
+  object?: 'model'
+  owned_by?: string
+  name?: string
+  context_window?: number
+  /** 服务端允许的 max_tokens 上限 */
+  max_output_tokens?: number
+  effort?: { supported_levels: string[]; default_level?: string }
+}
+
+/** GET /models 响应；data 缺失或非数组时按拉取失败处理 */
+export type ListModelsResponse = { object: 'list'; data: ModelInfo[] }
 
 // ---------- 响应：内容块 ----------
 
@@ -177,8 +202,10 @@ export type CreateMessageRequest = {
   system: string
   messages: MessageParam[]
   thinking: { type: 'enabled' | 'disabled' }
+  /** 仅开启思考时携带：thinking.type 决定开关，effort 只决定推理强度（low/high/max，默认 high） */
+  output_config?: { effort: ReasoningEffort }
   tools: (DeepseekWebSearchTool | DeepseekReadUrlTool)[]
-  safety_check: { level: 'high' }
+  safety_check: { level: 'high' | 'low' }
   title?: { enabled: boolean }
 }
 

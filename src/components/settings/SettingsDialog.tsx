@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   IconDarkOutline16,
   IconDataOutline16,
@@ -18,12 +18,15 @@ import {
 import { useIsMobile } from '../../app/viewport.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
+import { loadModels, useModelList } from '../../services/models.js'
+import type { ReasoningEffort } from '../../services/api/types.js'
 import {
   isChineseBrowser,
   setLocale,
   setLocation,
+  setModel,
+  setReasoningEffort,
   setThemePreference,
-  setTtsVoice,
   useSettings,
   type ThemePreference,
 } from '../../services/settings.js'
@@ -37,7 +40,7 @@ import { closeSettings, useSettingsDialog, type SettingsSection } from './settin
 import styles from './Settings.module.css'
 
 /**
- * 设置弹窗：分「通用设置」（主题、语言、朗读音色、位置）与「数据管理」（API Key、导入、导出、删除）。
+ * 设置弹窗：分「通用设置」（主题、语言、位置）与「数据管理」（API Key、导入、导出、删除）。
  * 桌面端为居中弹窗、左侧导航；移动端为底部弹层、导航横排在内容上方
  */
 export const SettingsDialog = () => {
@@ -98,8 +101,9 @@ const SettingsContent = () => {
             <>
               <ThemeSetting />
               <LocaleSetting />
-              <TtsVoiceSetting />
               <LocationSetting />
+              <ModelSetting />
+              <ReasoningEffortSetting />
             </>
           ) : (
             <>
@@ -291,23 +295,96 @@ const LocaleSetting = () => {
   )
 }
 
-/** 朗读音色：stella（海星，女声）/ tide（暗潮，男声） */
-const TtsVoiceSetting = () => {
+/**
+ * 模型选择：列表来自 GET /models，没有 API Key 或拉取失败时回退到内置列表并说明原因。
+ * 切换只改设置，不回写已有会话的消息记录。
+ */
+const ModelSetting = () => {
   const t = useTranslate()
-  const ttsVoice = useSettings((state) => state.ttsVoice)
+  const apiKey = useSettings((state) => state.apiKey)
+  const model = useSettings((state) => state.model)
+  const status = useModelList((state) => state.status)
+  const models = useModelList((state) => state.models)
+  const error = useModelList((state) => state.error)
+
+  // 打开设置或换 Key 时拉一次；同一个 Key 由 loadModels 内部缓存，不重复请求
+  useEffect(() => {
+    void loadModels(apiKey)
+  }, [apiKey])
+
+  const options = models.map((item) => ({ value: item.id, label: item.name || item.id }))
+  // 已选模型不在列表里（回退列表、服务端下线）时仍照原样显示，不能悄悄换成别的模型
+  if (!options.some((option) => option.value === model)) {
+    options.unshift({ value: model, label: model })
+  }
+  const failure: Status =
+    status === 'failed'
+      ? {
+          key: error ? 'settingsModelFailed' : 'settingsModelEmpty',
+          params: error ? { message: error } : undefined,
+          error: true,
+        }
+      : null
+
   return (
     <SettingCell
-      label={t('settingsTtsVoice')}
+      label={t('settingsModel')}
+      status={failure}
+      description={
+        status === 'loading'
+          ? t('settingsModelLoading')
+          : status === 'builtin'
+            ? t('settingsModelBuiltin')
+            : undefined
+      }
+      action={
+        <div className={styles.modelSelectors}>
+          <Select
+            ariaLabel={t('settingsModel')}
+            className={styles.modelSelect}
+            value={model}
+            options={options}
+            onChange={setModel}
+          />
+          {status === 'failed' ? (
+            <Button variant="outlined" size="m" onClick={() => void loadModels(apiKey, true)}>
+              {t('retry')}
+            </Button>
+          ) : null}
+        </div>
+      }
+    />
+  )
+}
+
+const effortOptions: { value: ReasoningEffort; label: TranslationKey }[] = [
+  { value: 'low', label: 'settingsReasoningEffortLow' },
+  { value: 'high', label: 'settingsReasoningEffortHigh' },
+  { value: 'max', label: 'settingsReasoningEffortMax' },
+]
+
+/**
+ * 推理强度：三档写进请求的 output_config.effort。
+ * 关闭深度思考时置灰不可选，但不清空已选档位，重新开启后沿用上次选择。
+ */
+const ReasoningEffortSetting = () => {
+  const t = useTranslate()
+  const reasoningEffort = useSettings((state) => state.reasoningEffort)
+  const thinking = useSettings((state) => state.thinking)
+  const label = t('settingsReasoningEffort')
+  return (
+    <SettingCell
+      label={label}
       status={null}
+      description={thinking ? undefined : t('settingsReasoningEffortOff')}
       action={
         <Select
-          ariaLabel={t('settingsTtsVoice')}
-          value={ttsVoice}
-          options={[
-            { value: 'stella', label: t('settingsTtsVoiceStella') },
-            { value: 'tide', label: t('settingsTtsVoiceTide') },
-          ]}
-          onChange={setTtsVoice}
+          ariaLabel={label}
+          className={styles.effortSelect}
+          value={reasoningEffort}
+          disabled={!thinking}
+          options={effortOptions.map((option) => ({ value: option.value, label: t(option.label) }))}
+          onChange={setReasoningEffort}
         />
       }
     />

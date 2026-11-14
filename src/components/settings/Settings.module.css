@@ -146,6 +146,23 @@
   max-width: min(285px, 100%);
 }
 
+.modelSelectors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.modelSelect {
+  max-width: min(285px, 100%);
+}
+
+.effortSelect {
+  min-width: 104px;
+}
+
 .theme {
   flex-shrink: 0;
   margin-top: 10px;

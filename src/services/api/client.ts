@@ -6,7 +6,9 @@ import type {
   CreateMessageRequest,
   FileObject,
   FilePurpose,
+  ListModelsResponse,
   MessageStreamEvent,
+  ModelInfo,
 } from './types.js'
 
 /** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
@@ -89,13 +91,26 @@ const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string>
   ...(beta ? { 'anthropic-beta': FILES_BETA } : {}),
 })
 
-/** 用 GET /models 校验 API Key（不产生费用） */
-export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
-  await request(`${API_ORIGIN}/models`, {
+/**
+ * GET /models：获取可用模型列表，同时用于校验 API Key（不产生费用）。
+ * 响应形状不符合协议时返回空数组，由调用方回退到内置列表。
+ */
+export const listModels = async (apiKey: string, signal?: AbortSignal): Promise<ModelInfo[]> => {
+  const response = await request(`${API_ORIGIN}/models`, {
     method: 'GET',
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,
   })
+  const body = (await response.json().catch(() => null)) as ListModelsResponse | null
+  const data = body?.data
+  return Array.isArray(data)
+    ? data.filter((model) => typeof model?.id === 'string' && model.id !== '')
+    : []
+}
+
+/** 校验 API Key：非 2xx 时抛 ApiError，响应内容由 listModels 解析 */
+export const verifyApiKey = async (apiKey: string, signal?: AbortSignal): Promise<void> => {
+  await listModels(apiKey, signal)
 }
 
 /**

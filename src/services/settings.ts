@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { TtsVoice } from './api/speech.js'
+import type { ReasoningEffort } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
 
 export type Locale = 'zh-CN' | 'en-US'
@@ -7,13 +7,25 @@ export type Locale = 'zh-CN' | 'en-US'
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
 
-/** 本机设置，存 localStorage：API Key、语言、主题、位置、朗读音色、深度思考与智能搜索开关、侧边栏收起状态 */
+/** 默认模型：未选择过、或拉取模型列表失败时使用 */
+export const DEFAULT_MODEL = 'deepseek-flash'
+
+/** 推理强度默认档位，与服务端默认一致 */
+export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high'
+
+/**
+ * 本机设置，存 localStorage：API Key、语言、主题、位置、模型、推理强度、
+ * 深度思考与智能搜索开关、侧边栏收起状态。
+ */
 type Settings = {
   apiKey: string | null
   locale: Locale
   themePreference: ThemePreference
   location: UserLocation | null
-  ttsVoice: TtsVoice
+  /** 全局模型选择（不区分会话），深度思考与智能搜索也是全局粒度 */
+  model: string
+  /** 推理强度；关闭深度思考时保留用户选择，只是不参与请求 */
+  reasoningEffort: ReasoningEffort
   thinking: boolean
   search: boolean
   siderCollapsed: boolean
@@ -24,7 +36,8 @@ const KEYS = {
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
-  ttsVoice: 'chat-demo:tts-voice',
+  model: 'chat-demo:model',
+  reasoningEffort: 'chat-demo:reasoning-effort',
   thinking: 'chat-demo:thinking',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
@@ -84,15 +97,24 @@ const initialThemePreference = (): ThemePreference => {
   return saved === 'light' || saved === 'dark' ? saved : 'system'
 }
 
-/** 未保存过时使用服务端默认音色 stella（海星） */
-const initialTtsVoice = (): TtsVoice => (read(KEYS.ttsVoice) === 'tide' ? 'tide' : 'stella')
+const isReasoningEffort = (value: string | null): value is ReasoningEffort =>
+  value === 'low' || value === 'high' || value === 'max'
+
+/** 未保存过（或保存值不可识别）时用默认模型 */
+const initialModel = (): string => read(KEYS.model)?.trim() || DEFAULT_MODEL
+
+const initialReasoningEffort = (): ReasoningEffort => {
+  const saved = read(KEYS.reasoningEffort)
+  return isReasoningEffort(saved) ? saved : DEFAULT_REASONING_EFFORT
+}
 
 export const useSettings = create<Settings>(() => ({
   apiKey: read(KEYS.apiKey),
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
-  ttsVoice: initialTtsVoice(),
+  model: initialModel(),
+  reasoningEffort: initialReasoningEffort(),
   thinking: read(KEYS.thinking) === 'true',
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
@@ -114,14 +136,21 @@ export const setThemePreference = (themePreference: ThemePreference) => {
   useSettings.setState({ themePreference })
 }
 
-export const setTtsVoice = (ttsVoice: TtsVoice) => {
-  write(KEYS.ttsVoice, ttsVoice)
-  useSettings.setState({ ttsVoice })
-}
-
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
+}
+
+export const setModel = (model: string) => {
+  const value = model.trim() || DEFAULT_MODEL
+  write(KEYS.model, value)
+  useSettings.setState({ model: value })
+}
+
+/** 只改强度档位；开关状态独立保存，关闭思考不会覆盖这里的选择 */
+export const setReasoningEffort = (reasoningEffort: ReasoningEffort) => {
+  write(KEYS.reasoningEffort, reasoningEffort)
+  useSettings.setState({ reasoningEffort })
 }
 
 export const setThinking = (thinking: boolean) => {
