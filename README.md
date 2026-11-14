@@ -71,7 +71,7 @@ adb install -r dist-apk\deepseek-chat.apk
 
 - The API key is **not** baked into the APK. Enter it in Settings; it is stored in localStorage of the app origin. Nothing else is injected at build time.
 - Package name stays `ds.app` and the signing key is `android\debug.keystore` (git-ignored), so a new APK can be installed **over** an existing install. Lose that keystore and you must uninstall first, which wipes local chats.
-- `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.1.1 → 101). Bump `package.json` before shipping.
+- `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.2.0 → 200). Bump `package.json` before shipping.
 - `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), only the `INTERNET` permission.
 - `android/` holds the shell: `MainActivity.java` (assets serving, external links, file picker, SAF export, back key), `shell.js` (patch injected into the page for the back key and blob downloads), `res/`, `AndroidManifest.xml`. Nothing in `src/` or `rspack.config.ts` is Android-specific: the shell works because the build uses `publicPath: 'auto'`.
 

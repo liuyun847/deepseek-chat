@@ -71,7 +71,7 @@ adb install -r dist-apk\deepseek-chat.apk
 
 - API Key **不写进 APK**：在设置里填，存在应用源的 localStorage 里。构建期不注入任何密钥。
 - 包名沿用 `ds.app`，签名私钥是 `android\debug.keystore`（已 gitignore），因此新包能**覆盖升级**已装版本。丢了这份私钥就只能先卸载，本地聊天记录会一起丢。
-- `versionName` 取自 `package.json`；`versionCode` 按 `major*10000 + minor*100 + patch` 折算（0.1.1 → 101）。发版前先改 `package.json`。
+- `versionName` 取自 `package.json`；`versionCode` 按 `major*10000 + minor*100 + patch` 折算（0.2.0 → 200）。发版前先改 `package.json`。
 - `minSdk 26`、`targetSdk 34`（升到 35 会被 Android 15 强制 edge-to-edge），权限只有 `INTERNET` 一条。
 - `android/` 是壳层：`MainActivity.java`（assets 供给、外链、选文件、SAF 导出、返回键）、`shell.js`（注入页面的补丁）、`res/`、`AndroidManifest.xml`。
 
