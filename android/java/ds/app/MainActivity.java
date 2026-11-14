@@ -60,6 +60,7 @@ import java.util.Map;
  * 注意：本类不能用 lambda / 方法引用。javac 以 android.jar 作 bootclasspath 编译，
  * 里面没有 java.lang.invoke.LambdaMetafactory，lambda 会直接编译失败。
  */
+@SuppressWarnings("deprecation") // onBackPressed / SYSTEM_UI_FLAG_LIGHT_STATUS_BAR 在 API 30+ 标注过时，但在 minSdk 26 上行为最稳，见各自注释
 public class MainActivity extends Activity {
 
     /** 前端资源的虚拟来源。域名带 https 只是为了让 WebView 认定为安全源。 */

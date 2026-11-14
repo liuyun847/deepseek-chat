@@ -155,7 +155,9 @@ $javacArgs = @(
     '-bootclasspath', $Jar, '-classpath', $Jar, '-Xlint:-options',
     '-d', $classes
 ) + $sources
-& (Join-Path $Jdk 'bin\javac.exe') @javacArgs 2>&1 | ForEach-Object { Write-Host "    $_" }
+# 不把 javac 的输出接进 PowerShell 管道：javac 按系统代码页写 stdout，管道会被按 UTF-8
+# 再解一次，中文提示变成乱码。直接继承控制台句柄，由终端自己解码。
+& (Join-Path $Jdk 'bin\javac.exe') @javacArgs
 if ($LASTEXITCODE -ne 0) { throw 'javac 失败' }
 Ok "$((Get-ChildItem $classes -Recurse -Filter *.class).Count) 个 class"
 
@@ -224,8 +226,10 @@ if ($Dev) {
     )
     & (Join-Path $Bt 'apksigner.bat') @signArgs
     if ($LASTEXITCODE -ne 0) { throw 'apksigner 失败' }
-    # 不启用 v1（JAR 签名）：minSdk 26 起 v2 已足够，且 v1 是更弱的方案
-    Ok 'v2 + v3 签名完成（v1 跳过：minSdk 26 起 v2 已足够）'
+    # apksigner 默认仍会顺手写入 META-INF 的 v1 签名文件（与旧项目产物一致，别当成残留清理掉）。
+    # minSdk 26 下安装与校验都走 v2/v3，所以 apksigner verify 里 "v1 scheme (JAR signing): false"
+    # 是正常输出 —— 它表示"没用 v1 校验"，不表示文件不存在。
+    Ok 'v2 + v3 签名完成（apksigner 仍会写 v1 文件，minSdk 26 下校验走 v2/v3）'
 }
 
 # ── 校验 ────────────────────────────────────────────────────────────────────
