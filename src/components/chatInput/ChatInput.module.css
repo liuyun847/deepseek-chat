@@ -201,11 +201,6 @@
   }
 }
 
-/* 录音中由频谱接管第一行，隐藏正文但保留高度 */
-.textareaHidden {
-  visibility: hidden;
-}
-
 @media not all and (min-width: 440px) {
   .textarea,
   .mirror {

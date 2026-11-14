@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { memo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
+import { memo, useCallback, useLayoutEffect, useRef } from 'react'
 import {
   IconGlobeLanguageOutline14,
   IconPaperclipOutline16,
@@ -20,7 +20,6 @@ import {
   setDraftText,
   useDrafts,
 } from '../../services/chat/drafts.js'
-import { stopReadAloud } from '../../services/speech/readAloud.js'
 import { IconButton } from '../base/IconButton.js'
 import { Tooltip } from '../base/Tooltip.js'
 import { ensureApiKey } from '../settings/settingsDialogState.js'
@@ -28,15 +27,12 @@ import { DragMask, useFileDrop } from './DragMask.js'
 import { showToast } from '../base/toastState.js'
 import { ACCEPT, useUploads } from '../../services/attachments.js'
 import { DraftAttachments } from './DraftAttachments.js'
-import { useVoiceInput } from './useVoiceInput.js'
-import { VoiceButton } from './VoiceButton.js'
-import { Spectrum } from './Spectrum.js'
 import { useTranslate } from '../../i18n/index.js'
 import styles from './ChatInput.module.css'
 
-/** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 语音输入 + 发送 / 停止 */
+/** 输入框：自适应高度的文本框 + 文件 + 深度思考与智能搜索开关 + 发送 / 停止 */
 export const ChatInput = memo(function ChatInput({ sessionId }: { sessionId: string | null }) {
-  // 切换目标时释放录音、转写和 DOM 状态；文字与附件由草稿服务保留。
+  // 切换目标时重建 DOM 状态；文字与附件由草稿服务保留。
   return <Input key={sessionId === null ? 'new' : `session:${sessionId}`} sessionId={sessionId} />
 })
 
@@ -101,41 +97,12 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
   )
   const dragging = useFileDrop(acceptFiles)
 
-  /** 转写结果插入到光标处，并把光标移到插入内容之后 */
-  const voice = useVoiceInput((transcript) => {
-    const textarea = textareaRef.current
-    const current = getDraft(sessionId).text
-    const start = textarea?.selectionStart ?? current.length
-    const end = textarea?.selectionEnd ?? current.length
-    setText(current.slice(0, start) + transcript + current.slice(end))
-    requestAnimationFrame(() => {
-      textarea?.focus({ preventScroll: true })
-      textarea?.setSelectionRange(start + transcript.length, start + transcript.length)
-    })
-  })
-
-  // 欢迎页导入后会话 ID 不变，不能依赖卸载取消语音；订阅开始事件也覆盖快速完成的导入。
-  const cancelVoice = voice.cancel
-  useEffect(
-    () =>
-      useChatStore.subscribe((state, previous) => {
-        if (state.importingHistory && !previous.importingHistory) {
-          cancelVoice()
-        }
-      }),
-    [cancelVoice]
-  )
-
-  // 移动端录音时用频谱替代输入框内容
-  const recording = voice.status === 'recording'
-
   // 排队、上传中或上传失败的附件都留在输入框，全部上传成功后才能发送
-  const canSend = !importingHistory && !streaming && voice.status === 'idle' && draftReady
+  const canSend = !importingHistory && !streaming && draftReady
 
   const send = () => {
     if (
       useChatStore.getState().importingHistory ||
-      voice.status !== 'idle' ||
       !prepareDraftMessage(getDraft(sessionId), useUploads.getState().tasks)
     ) {
       return
@@ -144,7 +111,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
     if (!ensureApiKey() || !sendMessage(sessionId)) {
       return
     }
-    stopReadAloud()
     if (isMobile) {
       textareaRef.current?.blur()
     } else {
@@ -165,7 +131,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
       <div className={styles.textareaWrapper}>
         <textarea
           ref={textareaRef}
-          className={clsx(styles.textarea, recording && isMobile && styles.textareaHidden)}
+          className={styles.textarea}
           placeholder={t('chatInputPlaceholderChat')}
           rows={2}
           // 移动端不自动聚焦，避免一打开就弹出键盘
@@ -194,7 +160,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
             }
           }}
         />
-        {recording && isMobile ? <Spectrum getAnalyser={voice.getAnalyser} /> : null}
         <div className={styles.mirror} aria-hidden>
           {`${text}\n`}
         </div>
@@ -228,19 +193,6 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
           </Tooltip>
         </div>
         <div className={styles.right}>
-          <VoiceButton
-            status={voice.status}
-            disabled={!voice.available}
-            seconds={voice.seconds}
-            onClick={() => {
-              if (
-                voice.status !== 'idle' ||
-                (!useChatStore.getState().importingHistory && ensureApiKey())
-              ) {
-                void voice.toggle()
-              }
-            }}
-          />
           <IconButton
             size="m"
             tone="primary"
@@ -265,10 +217,7 @@ const Input = ({ sessionId }: { sessionId: string | null }) => {
               type="button"
               className={styles.sendButton}
               aria-label={t('chatInputStopButtonTooltip')}
-              onClick={() => {
-                stopReadAloud()
-                stopReply(sessionId)
-              }}
+              onClick={() => stopReply(sessionId)}
             >
               <IconStopFill16 />
             </button>
