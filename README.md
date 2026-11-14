@@ -43,6 +43,20 @@ History import and export in Settings use ZIP archives. After confirmation and s
 
 Settings → Data → Delete all chats clears all local conversations, original attachments, and unsent drafts after confirmation. It stops ongoing replies and returns to a new chat. Your API key and settings are preserved; files already uploaded to the API service are not deleted.
 
+## Multi-device sync (M1)
+
+The repo ships a zero-dependency sync service plus a client entry point for syncing chats and messages between devices on the same machine or LAN.
+
+Start the service (Node.js 22+, built-in modules only):
+
+```sh
+node sync-server/server.mjs --port 7788
+```
+
+It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-data.json`. For other devices on the LAN, start it with `--host 0.0.0.0` and enter this machine's IP in the client. In the client, open Settings → Multi-device sync, fill in the server URL (for example `http://127.0.0.1:7788`) and device name, then "Test connection" → "Sync now".
+
+Sync is record-granular (chat, message) last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
+
 ## Development
 
 | Command       | Description                  |

@@ -9,3 +9,5 @@ build/
 .env.*
 !.env.example
 tmp/
+# 多端同步服务的本地数据文件（sync-server/server.mjs --data 的默认位置）
+sync-server/data/

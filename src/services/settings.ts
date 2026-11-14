@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { createId } from '../utils/id.js'
 import type { ReasoningEffort } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
 
@@ -13,9 +14,12 @@ export const DEFAULT_MODEL = 'deepseek-flash'
 /** 推理强度默认档位，与服务端默认一致 */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high'
 
+/** 多端同步的默认服务地址：与 `sync-server/server.mjs` 的默认端口一致 */
+export const DEFAULT_SYNC_SERVER = 'http://127.0.0.1:7788'
+
 /**
  * 本机设置，存 localStorage：API Key、语言、主题、位置、模型、推理强度、
- * 深度思考与智能搜索开关、侧边栏收起状态。
+ * 深度思考与智能搜索开关、侧边栏收起状态、多端同步的服务地址与设备身份。
  */
 type Settings = {
   apiKey: string | null
@@ -29,6 +33,12 @@ type Settings = {
   thinking: boolean
   search: boolean
   siderCollapsed: boolean
+  /** 多端同步服务地址；空串表示还没配置 */
+  syncServerUrl: string
+  /** 设备名，只用于界面展示与本机识别，不参与冲突判定 */
+  syncDeviceName: string
+  /** 设备 id：首次启动生成并固定，冲突时用于 tie-break，用户不可改 */
+  syncDeviceId: string
 }
 
 const KEYS = {
@@ -41,6 +51,9 @@ const KEYS = {
   thinking: 'chat-demo:thinking',
   search: 'chat-demo:search',
   siderCollapsed: 'chat-demo:sider-collapsed',
+  syncServerUrl: 'chat-demo:sync-server',
+  syncDeviceName: 'chat-demo:sync-device-name',
+  syncDeviceId: 'chat-demo:sync-device-id',
 } as const
 
 const read = (key: string) => {
@@ -100,6 +113,34 @@ const initialThemePreference = (): ThemePreference => {
 const isReasoningEffort = (value: string | null): value is ReasoningEffort =>
   value === 'low' || value === 'high' || value === 'max'
 
+/** 短随机码：设备 id 与默认设备名的一次性生成 */
+const randomSuffix = (length: number) => createId().replace(/-/g, '').slice(0, length)
+
+/**
+ * 设备 id 首次启动时生成并落 localStorage。
+ * 不能每次刷新重算：它是冲突 tie-break 的依据，变了会让两端对「谁更新」的判断摇摆。
+ */
+const initialSyncDeviceId = (): string => {
+  const saved = read(KEYS.syncDeviceId)?.trim()
+  if (saved) {
+    return saved
+  }
+  const id = 'dev-' + randomSuffix(8)
+  write(KEYS.syncDeviceId, id)
+  return id
+}
+
+/** 默认设备名同样只生成一次，之后可在设置里改 */
+const initialSyncDeviceName = (): string => {
+  const saved = read(KEYS.syncDeviceName)?.trim()
+  if (saved) {
+    return saved
+  }
+  const name = (isChineseBrowser() ? '设备-' : 'Device-') + randomSuffix(4)
+  write(KEYS.syncDeviceName, name)
+  return name
+}
+
 /** 未保存过（或保存值不可识别）时用默认模型 */
 const initialModel = (): string => read(KEYS.model)?.trim() || DEFAULT_MODEL
 
@@ -118,6 +159,9 @@ export const useSettings = create<Settings>(() => ({
   thinking: read(KEYS.thinking) === 'true',
   search: read(KEYS.search) === 'true',
   siderCollapsed: read(KEYS.siderCollapsed) === 'true',
+  syncServerUrl: read(KEYS.syncServerUrl)?.trim() ?? '',
+  syncDeviceName: initialSyncDeviceName(),
+  syncDeviceId: initialSyncDeviceId(),
 }))
 
 export const setLocale = (locale: Locale) => {
@@ -166,4 +210,24 @@ export const setSearch = (search: boolean) => {
 export const setSiderCollapsed = (siderCollapsed: boolean) => {
   write(KEYS.siderCollapsed, String(siderCollapsed))
   useSettings.setState({ siderCollapsed })
+}
+
+/** 保存同步服务地址；空串表示清除配置（「测试连接」「同步」会提示先填地址） */
+export const setSyncServerUrl = (url: string) => {
+  const value = url.trim()
+  write(KEYS.syncServerUrl, value || null)
+  useSettings.setState({ syncServerUrl: value })
+}
+
+/** 保存设备名；清空时回退到默认名，保证列表里始终有名字可显示 */
+export const setSyncDeviceName = (name: string) => {
+  const value = name.trim()
+  if (!value) {
+    const fallback = (isChineseBrowser() ? '设备-' : 'Device-') + randomSuffix(4)
+    write(KEYS.syncDeviceName, fallback)
+    useSettings.setState({ syncDeviceName: fallback })
+    return
+  }
+  write(KEYS.syncDeviceName, value)
+  useSettings.setState({ syncDeviceName: value })
 }

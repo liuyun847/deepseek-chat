@@ -7,6 +7,7 @@ import {
   IconEditOutline16,
   IconFollowsystemOutline16,
   IconLightOutline16,
+  IconRefreshOutline16,
   IconSettingsOutline16,
   IconUploadOutline14,
 } from '../base/icons.js'
@@ -38,12 +39,13 @@ import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
+import { SyncSettings } from './SyncSettings.js'
 import { SystemPromptSettings } from './SystemPromptSettings.js'
 import styles from './Settings.module.css'
 
 /**
- * 设置弹窗：分「通用设置」（主题、语言、位置、模型、推理强度）、「系统提示词」（提示词库）
- * 与「数据管理」（API Key、导入、导出、删除）。
+ * 设置弹窗：分「通用设置」（主题、语言、位置、模型、推理强度）、「系统提示词」（提示词库）、
+ * 「多端同步」（服务地址、设备名、测试连接、同步）与「数据管理」（API Key、导入、导出、删除）。
  * 桌面端为居中弹窗、左侧导航；移动端为底部弹层、导航横排在内容上方
  */
 export const SettingsDialog = () => {
@@ -61,6 +63,11 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     value: 'prompts',
     label: 'settingDialogAsidePromptOptionLabel',
     icon: <IconEditOutline16 />,
+  },
+  {
+    value: 'sync',
+    label: 'settingDialogAsideSyncOptionLabel',
+    icon: <IconRefreshOutline16 />,
   },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
 ]
@@ -115,6 +122,8 @@ const SettingsContent = () => {
             </>
           ) : section === 'prompts' ? (
             <SystemPromptSettings />
+          ) : section === 'sync' ? (
+            <SyncSettings />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />

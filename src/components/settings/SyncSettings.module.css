@@ -1,0 +1,62 @@
+/**
+ * 多端同步页：与 Settings.module.css 的通用行样式配合使用，
+ * 这里只补输入框、行内控件排布与首次同步确认框的正文样式。
+ */
+.sync {
+  display: flex;
+  flex-direction: column;
+}
+
+/** 输入框 + 按钮：窄屏时换行，宽屏时右对齐 */
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.input {
+  box-sizing: border-box;
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 280px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  background-color: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  outline: none;
+  transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out);
+
+  &:focus {
+    border-color: var(--dsw-alias-brand-primary);
+  }
+
+  &::placeholder {
+    color: var(--dsw-alias-label-caption);
+  }
+}
+
+/** 上次同步结果 + 附件说明 */
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+

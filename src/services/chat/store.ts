@@ -221,6 +221,50 @@ export const retrySaveSessions = () => {
   }
 }
 
+/**
+ * 同步前把内存里的会话写回 IndexedDB。
+ * 同步读的是 IndexedDB，而界面改的是内存缓存（有延迟落盘），不先刷一遍会同步到旧内容。
+ */
+export const flushChatStorage = async (): Promise<void> => {
+  for (const flush of streamFlushes.values()) {
+    flush()
+  }
+  const { sessionCache } = get()
+  await Promise.all(
+    Object.entries(sessionCache).map(([id, session]) =>
+      db.saveSession(session, pendingFiles.get(id)).catch(db.reportStorageError('flush session'))
+    )
+  )
+}
+
+/**
+ * 同步落地后按 IndexedDB 现状重载：丢弃内存缓存与在途读取，重新读列表，
+ * 再加载当前会话。与导入一样推进 historyEpoch，避免在途读取把旧内容写回缓存。
+ */
+export const reloadChatFromStorage = async (): Promise<void> => {
+  historyEpoch += 1
+  initTask = undefined
+  sessionLoads.clear()
+  sessionAccess.clear()
+  unsavedSessions.clear()
+  pendingFiles.clear()
+  const summaries = await db.loadSessionSummaries()
+  const { activeId } = get()
+  set({
+    ready: true,
+    initError: false,
+    sessions: sortSessions(summaries),
+    sessionCache: {},
+    sessionLoadErrors: {},
+    sessionSaveErrors: {},
+    activeId: activeId !== null && summaries.some((summary) => summary.id === activeId) ? activeId : null,
+  })
+  const nextActive = get().activeId
+  if (nextActive !== null) {
+    void ensureSessionLoaded(nextActive)
+  }
+}
+
 /** 离开前先合并尚未绘制的增量；隐藏期间浏览器可能暂停动画帧。 */
 export const bindChatPersistence = () => {
   const save = () => {
