@@ -433,9 +433,16 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* 上限跟随可见区域高度：vh 兜底 + @supports 里换 dvh，理由见 App.module.css 末尾。 */
 .deleteConfirm {
-  max-height: calc(100dvh - 32px);
+  max-height: calc(100vh - 32px);
   overflow-y: auto;
+}
+
+@supports (height: 100dvh) {
+  .deleteConfirm {
+    max-height: calc(100dvh - 32px);
+  }
 }
 
 .deleteActions {

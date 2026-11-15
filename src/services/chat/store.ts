@@ -890,7 +890,9 @@ const prepareFiles = async (sessionId: string, request: Request, signal: AbortSi
   }
 
   const pending = new Map<string, FileAttachment>()
-  for (const [user] of getContextRounds(request.history).toReversed()) {
+  // 不用 toReversed()：Chromium 110 才有，本项目要兼容旧 WebView 的 91（见 android/shell/shell.js）；
+  // slice().reverse() 同样是「复制后倒序」，原数组不动。
+  for (const [user] of getContextRounds(request.history).slice().reverse()) {
     for (const file of user.files) {
       if (!file.serverId && !serverIds.has(file.id) && !pending.has(file.id)) {
         pending.set(file.id, file)

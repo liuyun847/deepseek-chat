@@ -9,6 +9,7 @@ import {
 import { IconCheckOutline16, IconCopyOutline16 } from '../base/icons.js'
 import { showToast } from '../base/toastState.js'
 import { copyText } from '../../utils/clipboard.js'
+import { isMermaidSupported } from '../../services/markdown/mermaid.js'
 import { MermaidDiagram } from './MermaidDiagram.js'
 import styles from './CodeBlock.module.css'
 
@@ -18,11 +19,14 @@ const CodeInfoRow = ({
   infostring,
   showDiagram,
   onToggleDiagram,
+  unsupported,
 }: {
   code: string
   infostring: string
   showDiagram: boolean
   onToggleDiagram?: () => void
+  /** 当前环境不支持给这门语言绘图：不显示切换按钮，只标注原因 */
+  unsupported?: boolean
 }) => {
   const t = useTranslate()
   const [copied, setCopied] = useState(false)
@@ -48,7 +52,10 @@ const CodeInfoRow = ({
           </button>
         </div>
       ) : (
-        <span className={styles.name}>{infostring}</span>
+        <span className={styles.info}>
+          <span className={styles.name}>{infostring}</span>
+          {unsupported ? <span className={styles.note}>{t('mermaidUnsupported')}</span> : null}
+        </span>
       )}
       <button
         type="button"
@@ -80,6 +87,9 @@ export const CodeBlock = memo(function CodeBlock({
   loading?: boolean
 }) {
   const isMermaid = infostring.toLowerCase() === 'mermaid'
+  // 旧 WebView 解析不了 mermaid 的 chunk（原因见 services/markdown/mermaid.ts）：探测不过就
+  // 当普通代码块显示，既不去请求那个 chunk，也不挂 MermaidDiagram，自然不会有未捕获的 SyntaxError。
+  const canDrawMermaid = isMermaid && isMermaidSupported()
   const [showDiagram, setShowDiagram] = useState(true)
   // 语言包注册在全局 Prism 上，每次渲染直接判断；加载完成后触发一次重渲染
   const rerender = useReducer((n: number) => n + 1, 0)[1]
@@ -110,10 +120,11 @@ export const CodeBlock = memo(function CodeBlock({
           code={code}
           infostring={infostring}
           showDiagram={showDiagram}
-          onToggleDiagram={isMermaid ? () => setShowDiagram((show) => !show) : undefined}
+          onToggleDiagram={canDrawMermaid ? () => setShowDiagram((show) => !show) : undefined}
+          unsupported={isMermaid && !canDrawMermaid}
         />
       </div>
-      {isMermaid && showDiagram ? (
+      {canDrawMermaid && showDiagram ? (
         <MermaidDiagram code={code} loading={loading} />
       ) : (
         <pre dangerouslySetInnerHTML={{ __html: renderedHtml }}></pre>

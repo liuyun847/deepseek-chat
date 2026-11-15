@@ -48,6 +48,7 @@ export const en = {
   mermaidLoading: 'Rendering diagram...',
   mermaidRenderFail: 'Mermaid rendering failed.',
   mermaidSwitchLabel: 'Toggle between Mermaid diagram and code',
+  mermaidUnsupported: 'Diagrams are not supported in this environment',
   toolSearchIntro: 'Searching for',
   messageSearching: 'Searching...',
   imageSearching: 'Searching by image...',

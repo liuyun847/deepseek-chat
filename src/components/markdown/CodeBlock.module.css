@@ -6,10 +6,25 @@
   padding: 6px;
 }
 
+/* 语言名 + 无法绘图时的说明，按基线排一行；窄屏允许换行，别把复制按钮挤出去 */
+.info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
 .name {
   margin-left: 8px;
   color: var(--dsw-alias-label-primary);
   font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.note {
+  color: var(--dsw-alias-label-secondary);
   font-size: 12px;
   line-height: 18px;
 }

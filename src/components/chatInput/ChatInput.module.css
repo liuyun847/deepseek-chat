@@ -214,10 +214,11 @@
   max-height: 336px;
 }
 
+/* 上限跟随可见区域高度：vh 兜底 + @supports 里换 dvh，理由见 App.module.css 末尾。 */
 @media not all and (min-width: 768px) {
   .wrapper {
     flex-shrink: 0;
-    max-height: calc(var(--app-viewport-height, 100dvh) - 120px);
+    max-height: calc(var(--app-viewport-height, 100vh) - 120px);
   }
 
   .textareaWrapper {
@@ -227,6 +228,14 @@
   .attachments,
   .functionRow {
     flex-shrink: 0;
+  }
+}
+
+@supports (height: 100dvh) {
+  @media not all and (min-width: 768px) {
+    .wrapper {
+      max-height: calc(var(--app-viewport-height, 100dvh) - 120px);
+    }
   }
 }
 

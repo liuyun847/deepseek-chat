@@ -44,6 +44,7 @@ export const zh = {
   mermaidLoading: '图表生成中...',
   mermaidRenderFail: '渲染失败',
   mermaidSwitchLabel: 'Mermaid 图表与代码切换',
+  mermaidUnsupported: '当前环境不支持图表渲染',
   toolSearchIntro: '搜索',
   messageSearching: '搜索中...',
   imageSearching: '图像搜索中...',

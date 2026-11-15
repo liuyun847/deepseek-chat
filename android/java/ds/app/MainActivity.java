@@ -6,6 +6,8 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Base64;
 import android.view.View;
 import android.view.ViewGroup;
@@ -48,10 +50,21 @@ import java.util.Map;
  * dist/ 在 http(s)://、file://、https://dsapp.local/ 下都能跑：入口
  * /index.html 引的相对路径 static/js/main.<hash>.js 落到 assets/static/js/…
  *
+ * shell.js 怎么进页面（注入时机）
+ * ==============================
+ * 必须在主脚本之前。主脚本是 defer，按规范排在所有经典脚本之后执行；而首帧渲染就可能
+ * 调用 polyfill 里的方法（实测：侧栏时间线分组调 r.at(-1)，缺 at 直接整页白屏，
+ * 见 .dsh/.project/20261115-旧WebView兼容修复/08c-at-race-list.json：rootLen 21794 → 0）。
+ * 所以 serveAsset 供 index.html 时把 <script src="/shell.js"></script> 插到 <head> 最前面：
+ * 经典同步脚本，解析到就执行，一定先于 defer 的主包。
+ * onPageFinished 那次注入保留为兜底（shell.js 自带 window.__dsShell 幂等闸门，
+ * 重复执行只是空转），用于兜住 /shell.js 请求失败或页面不经本类供给的极端情况。
+ *
  * 与 WebView 能力缺口对应的三处补丁
  * =================================
  *   1. 返回键 —— 单页应用没有 history，原生只能问页面；页面侧由 assets/shell.js
- *      提供 window.__dsBack()（关掉最上层弹窗），见该文件注释。
+ *      提供 window.__dsBack()（按「浮层 → 弹窗 → 抽屉 → 会话页」由内往外回退），
+ *      返回 false 时原生才决定 goBack 或退出，见 onBackPressed 与该文件注释。
  *   2. blob: 导出 —— WebView 没有下载管理器，<a download> 点了没反应；
  *      shell.js 拦截后把内容转成 base64 交给本类的 Bridge.saveBase64，
  *      再用系统文件选择器落盘。
@@ -69,6 +82,21 @@ public class MainActivity extends Activity {
 
     /** 壳层补丁脚本的 assets 路径。由构建脚本从 android/shell/ 拷进 APK。 */
     private static final String SHELL_ASSET = "shell.js";
+
+    /** 入口 HTML 在 assets 内的相对路径。只有它需要插入壳层脚本标签。 */
+    private static final String ENTRY_HTML = "index.html";
+
+    /**
+     * 插到入口 HTML &lt;head&gt; 最前面的脚本标签。
+     *
+     * 不能带 defer / async：主脚本是 defer，而 defer 脚本排在所有经典脚本之后执行，
+     * 所以「经典同步」这一段必然先于主包跑完 —— 这正是修首帧白屏的关键。
+     * data-ds-shell 只是「这份 HTML 已经插过」的识别标记，用于保证注入幂等。
+     */
+    private static final String SHELL_TAG = "<script src=\"/shell.js\" data-ds-shell></script>";
+
+    /** 上面那个标签的识别标记。 */
+    private static final String SHELL_MARK = "data-ds-shell";
 
     /** 设为 true 可用 chrome://inspect 调试线上 WebView。仅调试时打开。 */
     private static final boolean DEBUG_DEFAULT = false;
@@ -156,7 +184,10 @@ public class MainActivity extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
-                // 页面文档就绪后注入壳层补丁。失败也不影响主流程（返回键退化为直接退出）
+                // 兜底注入：正常路径下 index.html 里的 <script src="/shell.js"> 早已执行过，
+                // 这里再跑一次是空转（shell.js 顶部有 window.__dsShell 幂等闸门）。
+                // 保留它只为兜住「/shell.js 没加载成功」或「页面不经 serveAsset 供给」的情况，
+                // 那时返回键会退化为直接退出，不至于完全没补丁。失败也不影响主流程。
                 injectShell();
             }
         });
@@ -298,16 +329,136 @@ public class MainActivity extends Activity {
 
         try {
             InputStream in = getAssets().open(rel);
-            WebResourceResponse res = new WebResourceResponse(mimeOf(rel), "utf-8", in);
-            Map<String, String> h = new HashMap<>();
-            // 资源文件名带 contenthash，可以放心长缓存；入口 html 必须每次校验
-            h.put("Cache-Control", "no-cache");
-            h.put("X-Content-Type-Options", "nosniff");
-            res.setResponseHeaders(h);
-            return res;
+            // 入口 HTML 必须带上壳层脚本：主包是 defer，注入晚了首帧就会踩空（见类注释）
+            if (ENTRY_HTML.equals(rel)) return htmlWithShell(rel, in);
+            return localResponse(rel, in);
         } catch (IOException e) {
             bridgeLog("assets 里没有 " + rel);
             return notFound();
+        }
+    }
+
+    /**
+     * 包一层本地资源响应（统一 charset 与两条安全/缓存头）。
+     *
+     * @param rel  assets 内的相对路径，用来定 MIME
+     * @param body 响应体，调用方负责关闭
+     * @return 带响应头的本地资源响应
+     */
+    private WebResourceResponse localResponse(String rel, InputStream body) {
+        WebResourceResponse res = new WebResourceResponse(mimeOf(rel), "utf-8", body);
+        Map<String, String> h = new HashMap<>();
+        // 资源文件名带 contenthash，可以放心长缓存；入口 html 必须每次校验
+        h.put("Cache-Control", "no-cache");
+        h.put("X-Content-Type-Options", "nosniff");
+        res.setResponseHeaders(h);
+        return res;
+    }
+
+    /**
+     * 供入口 HTML，并把壳层脚本标签插到 &lt;head&gt; 最前面。
+     *
+     * 为什么在这里改而不是改 dist/index.html：dist 是前端产物，同一个文件还要能直接用
+     * 浏览器打开（README 支持双击 index.html）；/shell.js 只有壳里才有，写进产物会变成
+     * 网页形态的 404。放在供给层做，前端零改动、APK 内 assets 也保持原样。
+     *
+     * 编码：按 UTF-8 解码/编码，BOM（U+FEFF）会原样往返，其余字节不受影响。
+     *
+     * @param rel  assets 内的相对路径（即 index.html）
+     * @param raw  assets 里的原始字节流，本方法内读完并关闭
+     * @return 注入后的 HTML 响应；已插过或找不到可插位置时返回原文（不改动更好过改坏）
+     */
+    private WebResourceResponse htmlWithShell(String rel, InputStream raw) {
+        byte[] original;
+        try {
+            original = readAll(raw);
+        } catch (IOException e) {
+            // 读失败就退回「原样供给」：页面仍能打开，只是没有提前注入的补丁
+            // （返回空体会变成白屏 —— 那正是这次要修的症状，不能自己造一个）
+            bridgeLog("读取入口 HTML 失败，改为原样供给：" + e);
+            try {
+                return localResponse(rel, getAssets().open(rel));
+            } catch (IOException again) {
+                bridgeLog("重新打开入口 HTML 也失败：" + again);
+                return notFound();
+            }
+        }
+        String html = new String(original, StandardCharsets.UTF_8);
+        String patched = injectShellTag(html);
+        if (patched == null) return localResponse(rel, new ByteArrayInputStream(original));
+        byte[] body = patched.getBytes(StandardCharsets.UTF_8);
+        bridgeLog("入口 HTML 已注入壳层脚本（" + original.length + " → " + body.length + " 字节）");
+        return localResponse(rel, new ByteArrayInputStream(body));
+    }
+
+    /**
+     * 把 {@link #SHELL_TAG} 插到 &lt;head ...&gt; 开标签之后。
+     *
+     * @param html 原始 HTML
+     * @return 注入后的 HTML；已经插过、或没有任何可插的锚点时返回 null（表示保持原文）
+     */
+    private static String injectShellTag(String html) {
+        if (html == null || html.indexOf(SHELL_MARK) >= 0) return null;
+        int at = headInsertOffset(html);
+        if (at < 0) return null;
+        return html.substring(0, at) + SHELL_TAG + html.substring(at);
+    }
+
+    /**
+     * 找出「插进去一定在主脚本之前」的偏移。
+     *
+     * 优先 &lt;head ...&gt; 开标签之后；万一产物没有 head，退到第一个 &lt;script 之前 ——
+     * 仍然保证先于主包。两者都没有就不插（返回 -1）：宁可不补，也不要把标签塞进
+     * &lt;!doctype&gt; 之前（那会把文档打成怪异模式）。
+     *
+     * @param html 原始 HTML
+     * @return 插入偏移；无法安全插入时返回 -1
+     */
+    private static int headInsertOffset(String html) {
+        int head = indexOfIgnoreCase(html, "<head", 0);
+        if (head >= 0) {
+            int close = html.indexOf('>', head);
+            if (close > 0) return close + 1;
+        }
+        return indexOfIgnoreCase(html, "<script", 0);
+    }
+
+    /**
+     * 忽略大小写的子串查找（String 只提供区分大小写的 indexOf）。
+     *
+     * @param haystack 被搜的串
+     * @param needle   要找的子串
+     * @param from     起始偏移
+     * @return 首次出现的下标；找不到返回 -1
+     */
+    private static int indexOfIgnoreCase(String haystack, String needle, int from) {
+        int last = haystack.length() - needle.length();
+        for (int i = Math.max(from, 0); i <= last; i++) {
+            if (haystack.regionMatches(true, i, needle, 0, needle.length())) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * 把流读干净并关闭。
+     *
+     * @param in 输入流，方法返回前一定关闭
+     * @return 全部字节
+     * @throws IOException 读取失败
+     */
+    private static byte[] readAll(InputStream in) throws IOException {
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.max(1024, in.available()));
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toByteArray();
+        } finally {
+            try {
+                in.close();
+            } catch (IOException ignored) {
+                // 关不掉也没别的办法，字节已经读完了
+            }
         }
     }
 
@@ -344,7 +495,13 @@ public class MainActivity extends Activity {
 
     // ── 壳层补丁注入 ────────────────────────────────────────────────────────
 
-    /** 读取 assets/shell.js 并注入当前页面。失败只记日志，不影响主流程。 */
+    /**
+     * 读取 assets/shell.js 并用 evaluateJavascript 注入当前页面（兜底通道）。
+     *
+     * 常规通道是 serveAsset 在入口 HTML 里插的 &lt;script src="/shell.js"&gt;：
+     * 那条路径先于主包执行，能挡住首帧白屏。这里只是兜底，正常情况下是空转。
+     * 失败只记日志，不影响主流程。
+     */
     private void injectShell() {
         try (InputStream in = getAssets().open(SHELL_ASSET)) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -605,16 +762,91 @@ public class MainActivity extends Activity {
 
     // ── 生命周期、返回键与配色 ───────────────────────────────────────────────
 
+    /**
+     * 返回键的页面判定脚本。
+     *
+     * 页面已消费这次按键（关下拉浮层 / 关弹窗 / 收起抽屉 / 会话页回列表）给 1，
+     * 页面没有可回退的层级给 0，由原生决定 goBack 还是退出。
+     *
+     * 两个坑：
+     *   1. 必须返回**数字**而不是字符串。evaluateJavascript 的结果按 JSON 编码回传，
+     *      字符串会带上引号 —— 返回 '1' 时这里拿到的是 "\"1\""，与 "1" 永远不等。
+     *   2. 外面套一层函数吃掉页面脚本的异常：抛错时结果是 null，这里折成 0，
+     *      行为退化为「原生决定」，不会把返回键卡成按了没反应。
+     */
+    private static final String JS_BACK =
+            "(function(){try{return window.__dsBack&&window.__dsBack()?1:0}catch(e){return 0}})()";
+
+    /** 等页面回调的上限。页面卡住（渲染进程忙、脚本死循环）时也不至于让返回键彻底失灵。 */
+    private static final long BACK_TIMEOUT_MS = 800L;
+
+    /**
+     * 这次返回键是否还在等页面回调。
+     *
+     * evaluateJavascript 是异步的，连按时每次都会重新问一遍页面：上一次的判定还没回来
+     * 就再问一次，两个回调会各关一层，一次连按能把两层界面一起关掉。用它挡掉重复的按键。
+     */
+    private boolean backPending = false;
+
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+
+    /** 页面没在 BACK_TIMEOUT_MS 内回调时的兜底：当作「页面没处理」继续往下走。 */
+    private final Runnable backTimeout = new Runnable() {
+        @Override
+        public void run() {
+            if (!backPending) return;
+            backPending = false;
+            bridgeLog("返回键：页面未回调，按未处理兜底");
+            resolveBack(false);
+        }
+    };
+
+    /**
+     * 系统返回键。先问页面（关浮层、关弹窗、收起抽屉、会话页回列表），
+     * 页面说没处理才轮到原生：能 goBack 就 goBack，否则退出。
+     *
+     * 为什么必须问页面：本应用是单页应用、没有 history 路由，正常使用下 canGoBack()
+     * 一直是 false，原生无从判断"该关哪个界面"。
+     */
     @Override
     public void onBackPressed() {
-        // 先让页面处理（关弹窗），页面说没处理才退出
-        web.evaluateJavascript("(window.__dsBack && window.__dsBack()) ? 1 : 0",
-                new ValueCallback<String>() {
-                    @Override
-                    public void onReceiveValue(String value) {
-                        if (!"1".equals(value)) finish();
-                    }
-                });
+        if (web == null) {
+            super.onBackPressed();
+            return;
+        }
+        if (backPending) return;   // 上一次的判定还在路上：这次丢掉，避免一次连按关两层
+        backPending = true;
+        uiHandler.postDelayed(backTimeout, BACK_TIMEOUT_MS);
+        web.evaluateJavascript(JS_BACK, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                uiHandler.removeCallbacks(backTimeout);
+                if (!backPending) return;   // 已经被超时兜底处理过了
+                backPending = false;
+                // 结果可能是 1 / 0 / true / false；字符串形态会带 JSON 引号，一起兼容
+                String result = value == null ? "" : value.replace("\"", "").trim();
+                bridgeLog("返回键：页面返回 " + result);
+                resolveBack("1".equals(result) || "true".equals(result));
+            }
+        });
+    }
+
+    /**
+     * 页面判定之后的收尾。
+     *
+     * @param handled 页面是否已消费这次返回键
+     * @sideeffect handled 为 false 时可能调用 web.goBack()，或结束当前 Activity
+     */
+    private void resolveBack(boolean handled) {
+        if (handled) return;
+        // 页面没有可回退的层级：WebView 历史里还能退就退。正常使用走不到这一步
+        // （页面不做 history 跳转），但万一页面里出现了可回退的历史，回退比直接退出更合理。
+        if (web != null && web.canGoBack()) {
+            web.goBack();
+            return;
+        }
+        // 真正的退出：交给系统默认实现，保留返回键/返回手势的标准退出动画
+        super.onBackPressed();
     }
 
     @Override
@@ -626,6 +858,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        uiHandler.removeCallbacks(backTimeout);
+        backPending = false;
         pendingBytes = null;
         // 页面都没了，悬着的文件选择回调必须结掉，否则它对应的 input 会一直卡住
         cancelPendingFileChooser();

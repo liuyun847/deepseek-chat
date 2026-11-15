@@ -100,7 +100,7 @@ New-Item -ItemType Directory -Force -Path $assets | Out-Null
 Get-ChildItem -LiteralPath $Front -Force | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $assets -Recurse -Force
 }
-# 壳层补丁脚本：由 MainActivity 在 onPageFinished 时读取，不被 index.html 引用
+# 壳层补丁脚本：由 MainActivity 服务 index.html 时插成 <script src="/shell.js">（onPageFinished 还有一次幂等兜底注入）
 Copy-Item -LiteralPath (Join-Path $Root 'android\shell\shell.js') -Destination (Join-Path $assets 'shell.js') -Force
 $assetFiles = @(Get-ChildItem $assets -Recurse -File)
 $mb = [math]::Round((($assetFiles | Measure-Object Length -Sum).Sum) / 1MB, 2)

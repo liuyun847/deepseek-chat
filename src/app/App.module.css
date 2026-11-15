@@ -52,11 +52,27 @@
   text-align: center;
 }
 
+/*
+ * 移动端整页跟随可见区域：基行用 vh，能在 dvh 的浏览器再由下面的 @supports 覆盖成 dvh。
+ *
+ * 为什么不能直接写 height: 100vh; height: var(--app-viewport-height, 100dvh)：
+ * var() 的兜底值在「计算值阶段」才代入，代入后若是浏览器不认识的单位（Chromium 91
+ * 不认识 dvh），整条声明按「计算值无效」处理、height 退回 auto，前一行 100vh 不会生效
+ * ——这一层没有内容撑高，于是整页 0 高白屏。所以 dvh 只能放进 @supports 里。
+ */
 @media not all and (min-width: 768px) {
   .frame {
     position: fixed;
     top: var(--app-viewport-top, 0px);
     bottom: auto;
-    height: var(--app-viewport-height, 100dvh);
+    height: var(--app-viewport-height, 100vh);
+  }
+}
+
+@supports (height: 100dvh) {
+  @media not all and (min-width: 768px) {
+    .frame {
+      height: var(--app-viewport-height, 100dvh);
+    }
   }
 }
