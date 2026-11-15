@@ -6,7 +6,7 @@
 .DESCRIPTION
     检查项都是"出问题就会白屏或装不上"的那种硬约束：
       1. assets 条目名必须是正斜杠（aapt2 在 Windows 上会写成反斜杠 -> WebView 白屏）
-      2. assets 里必须有 dist 的入口与静态资源，且没有明文 API key（key 由用户填、存 localStorage）
+      2. assets 里必须有 dist 的入口与静态资源；内置 key（本地有密钥文件时）必须与之指纹一致
       3. resources.arsc 必须未压缩且 4 字节对齐（targetSdk 30+ 的硬要求）
       4. 签名方案有效（v2 / v3）
       5. manifest 的包名 / 版本 / minSdk / targetSdk / 权限 / 启动 Activity 正确
@@ -78,22 +78,42 @@ $reader.Close()
 Test-Ok ($html -match 'static/js/main\.[0-9a-f]{8}\.js') 'index.html 引用了主脚本'
 Test-Ok ($html -match 'static/css/main\.[0-9a-f]{8}\.css') 'index.html 引用了主样式'
 
-# ── 2. 密钥不该在包里 ───────────────────────────────────────────────────────
-# 新版模型：key 由用户在设置里填、存 localStorage。构建期没有任何密钥参与，
-# 包内出现 sk- 开头且长度像 key 的串就说明有人又把注入链搬回来了。
+# ── 2. 密钥 ─────────────────────────────────────────────────────────────────
+# key 由 rspack 在构建期从 .secrets\api-key.txt 注入主包（见 rspack.config.ts），
+# 所以「包内有 sk- 串」本身是预期的；要查的是它必须与本地密钥文件一致 —— 不一致说明
+# dist 是旧产物（没带 key）或打进了不相干的 key。没有密钥文件时仍要求零命中。
 Write-Host ''
 Write-Host '【密钥】' -ForegroundColor Yellow
-$leak = @()
+$SecretPath = Join-Path $Root '.secrets\api-key.txt'
+$SecretKey = $null
+if (Test-Path -LiteralPath $SecretPath) {
+    $SecretKey = (Get-Content -Raw -LiteralPath $SecretPath).Trim()
+}
+$skFiles = @()
+$keyFiles = @{}
 foreach ($e in $zip.Entries) {
     if ($e.FullName -notlike 'assets/*') { continue }
     if ($e.FullName -notmatch '\.(js|css|html|json|txt|map)$') { continue }
     $r = New-Object System.IO.StreamReader($e.Open())
     $t = $r.ReadToEnd()
     $r.Close()
-    if ($t -match 'sk-[A-Za-z0-9]{20,}') { $leak += $e.FullName }
+    if ($t -match 'sk-[A-Za-z0-9]{20,}') { $skFiles += $e.FullName }
+    if ($SecretKey -and $t.Contains($SecretKey)) { $keyFiles[$e.FullName] = $true }
 }
-Test-Ok ($leak.Count -eq 0) "assets 内无明文 API key（命中 $($leak.Count) 个文件）"
-if ($leak.Count) { $leak | Select-Object -First 5 | ForEach-Object { Write-Host "      $_" -ForegroundColor Red } }
+if ($SecretKey) {
+    # 指纹只含前 4 位，日志里不出现完整 key
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $digest = [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($SecretKey))).Replace('-', '').ToLower()
+    $sha.Dispose()
+    $fp = ('{0}…，长度 {1}，sha256 {2}' -f $SecretKey.Substring(0, 4), $SecretKey.Length, $digest.Substring(0, 8))
+    Test-Ok ($keyFiles.Count -ge 1) "内置 API key 与本地密钥文件一致（$($keyFiles.Count) 个 assets 文件，指纹 $fp）"
+    $unexpected = @($skFiles | Where-Object { -not $keyFiles.ContainsKey($_) })
+    Test-Ok ($unexpected.Count -eq 0) "assets 里没有其它来历不明的明文 key（命中 $($unexpected.Count) 个文件）"
+    if ($unexpected.Count) { $unexpected | Select-Object -First 5 | ForEach-Object { Write-Host "      $_" -ForegroundColor Red } }
+} else {
+    Test-Ok ($skFiles.Count -eq 0) "无本地密钥文件时 assets 内无明文 API key（命中 $($skFiles.Count) 个文件）"
+    if ($skFiles.Count) { $skFiles | Select-Object -First 5 | ForEach-Object { Write-Host "      $_" -ForegroundColor Red } }
+}
 
 $shellEntry = $zip.Entries | Where-Object { $_.FullName -eq 'assets/shell.js' }
 if ($shellEntry) {

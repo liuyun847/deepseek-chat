@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import { createId } from '../utils/id.js'
+// 只取类型：i18n 反向依赖本模块的 useSettings，用 import type 避免运行时循环引用
+import type { TranslationKey } from '../i18n/index.js'
 import type { ReasoningEffort } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
 
@@ -13,6 +15,16 @@ export const DEFAULT_MODEL = 'deepseek-flash'
 
 /** 推理强度默认档位，与服务端默认一致 */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high'
+
+/**
+ * 推理强度三档的展示顺序与文案 key：设置面板与对话页控制条共用同一份，
+ * 避免两处顺序或措辞不一致。
+ */
+export const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: TranslationKey }[] = [
+  { value: 'low', label: 'settingsReasoningEffortLow' },
+  { value: 'high', label: 'settingsReasoningEffortHigh' },
+  { value: 'max', label: 'settingsReasoningEffortMax' },
+]
 
 /** 多端同步的默认服务地址：与 `sync-server/server.mjs` 的默认端口一致 */
 export const DEFAULT_SYNC_SERVER = 'http://127.0.0.1:7788'
@@ -75,6 +87,47 @@ const write = (key: string, value: string | null) => {
     // 存储不可用时只在内存中生效
   }
 }
+
+/**
+ * 内置 API Key：构建期从 .secrets/api-key.txt 注入的常量（见 rspack.config.ts）。
+ * 页面里若存在 __DS_CONFIG__ / __DS_CONFIG（壳层注入或外挂 ds-config.js 的形态），优先用它。
+ *
+ * 两处都没有时返回 null —— 网页与 APK 都回退到「在设置里手动填」的老流程，不会报错。
+ *
+ * @returns 可用的内置 key，或 null（没有内置）
+ */
+const builtinApiKey = (): string | null => {
+  const scope = globalThis as {
+    __DS_CONFIG__?: { apiKey?: unknown }
+    __DS_CONFIG?: { apiKey?: unknown }
+  }
+  const injected = scope.__DS_CONFIG__?.apiKey ?? scope.__DS_CONFIG?.apiKey
+  if (typeof injected === 'string' && injected.trim()) {
+    return injected.trim()
+  }
+  // 没有构建期注入时该标识符不存在，typeof 是唯一不会抛错的读法
+  const baked = typeof __DS_BUILTIN_API_KEY__ === 'string' ? __DS_BUILTIN_API_KEY__.trim() : ''
+  return baked || null
+}
+
+/**
+ * 当前生效的 key 是否就是内置 key：设置面板据此提示「已内置」，而不是当作没填过。
+ *
+ * @param apiKey 当前生效的 key
+ * @returns 与内置值相同时为 true
+ */
+export const isBuiltinApiKey = (apiKey: string | null): boolean => {
+  const builtin = builtinApiKey()
+  return builtin !== null && apiKey === builtin
+}
+
+/**
+ * 用户手填的 key 优先；localStorage 里没有时才用内置 key。
+ * 内置值只存在于内存与构建产物里，不写进 localStorage，也不会被「改 key」清掉。
+ *
+ * @returns 初始 key，或 null（未配置，界面会引导去设置里填）
+ */
+const initialApiKey = (): string | null => read(KEYS.apiKey)?.trim() || builtinApiKey()
 
 /** 位置选择模式跟随浏览器语言，与应用内选择的界面语言无关。 */
 export const isChineseBrowser = (): boolean =>
@@ -150,7 +203,7 @@ const initialReasoningEffort = (): ReasoningEffort => {
 }
 
 export const useSettings = create<Settings>(() => ({
-  apiKey: read(KEYS.apiKey),
+  apiKey: initialApiKey(),
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),

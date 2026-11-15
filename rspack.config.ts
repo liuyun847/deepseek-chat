@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -10,6 +11,44 @@ const root = path.dirname(fileURLToPath(import.meta.url))
 const { version } = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8')
 ) as { version: string }
+
+/** 本机密钥文件：单行 API key，已被 .gitignore 忽略，不随仓库分发 */
+const SECRET_FILE = '.secrets/api-key.txt'
+
+/**
+ * 读取内置 API Key。
+ *
+ * 为什么不写进 src/ 或环境变量：key 绝不能进 git，源码里也不该出现；
+ * 放在 .secrets/api-key.txt 里由构建期读入、注入成常量，网页 dist 与 APK（同一份 dist）
+ * 就都自带可用 key —— 装好/打开即可发消息，不必先去设置里填。
+ *
+ * @returns 合法的 key；文件缺失、为空或格式不对时返回空串
+ */
+const readBuiltinApiKey = (): string => {
+  try {
+    const key = readFileSync(path.join(root, SECRET_FILE), 'utf8').trim()
+    return /^sk-[A-Za-z0-9]{16,}$/.test(key) ? key : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 密钥指纹：前 4 位 + 长度 + sha256 前 8 位，可安全写进构建日志。
+ *
+ * @param key 明文 key
+ * @returns 供日志展示的描述串（不含完整 key）
+ */
+const keyFingerprint = (key: string): string =>
+  `${key.slice(0, 4)}…，长度 ${key.length}，sha256 ${createHash('sha256').update(key).digest('hex').slice(0, 8)}`
+
+const builtinApiKey = readBuiltinApiKey()
+// 用 process.stdout 而不是 console：本文件在 oxlint 的 no-console 规则覆盖范围内
+process.stdout.write(
+  builtinApiKey
+    ? `[build] 已注入内置 API key（${keyFingerprint(builtinApiKey)}）\n`
+    : `[build] 未找到 ${SECRET_FILE}，产物不含内置 key：在设置里手动填\n`
+)
 
 const cssLoader = {
   loader: 'builtin:lightningcss-loader',
@@ -80,7 +119,11 @@ export const createConfig = ({
       scriptLoading: 'defer',
       meta: { 'application-version': version },
     }),
-    new rspack.DefinePlugin({ __API_ORIGIN__: JSON.stringify(apiOrigin) }),
+    // 内置 API key 走构建期常量：运行时无需额外请求/文件，file:// 与 WebView 都成立
+    new rspack.DefinePlugin({
+      __API_ORIGIN__: JSON.stringify(apiOrigin),
+      __DS_BUILTIN_API_KEY__: JSON.stringify(builtinApiKey),
+    }),
     new rspack.CopyRspackPlugin({
       patterns: [{ from: path.resolve(root, 'LICENSE'), to: 'LICENSE', toType: 'file' }],
     }),

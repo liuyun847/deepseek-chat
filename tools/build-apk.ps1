@@ -11,6 +11,8 @@
         pnpm --config.shell-emulator=true build
 
     步骤
+      0. 核对内置 key：读 .secrets\api-key.txt（git 忽略），确认 dist 主包里真的带了它 ——
+         key 由 rspack 在 pnpm build 时注入，本脚本只负责拦住「dist 没带 key」的静默失效
       1. 暂存 assets：dist\* -> build\assets\*，再把 android\shell\shell.js 拷进去
       2. aapt2 compile：android\res\ -> *.flat
       3. aapt2 link：.flat + AndroidManifest + assets -> base.apk，同时产出 R.java
@@ -21,8 +23,9 @@
       7. zipalign：4 字节对齐（必须在签名之前）
       8. apksigner：v2 + v3 签名，私钥沿用 android\debug.keystore
 
-    与旧版的差别：不再注入 API key。新版前端把 key 存在 localStorage（用户在设置里填），
-    构建时没有任何密钥参与，assets 里也不该出现 sk- 开头的字符串（verify-apk.ps1 会查）。
+    与旧版的差别：key 不再是 Java 侧常量（旧版 android\gen\ApiKey.java + app\js\config.js），
+    而是 rspack 在构建期从 .secrets\api-key.txt 注入前端的常量（见 rspack.config.ts），
+    网页版与 APK 共用同一份 dist；没有该文件时产物不含 key，用户仍需在设置里手填。
 
 .PARAMETER Dev
     跳过签名，输出未签名 APK（仅供 adb 调试，装不上）。
@@ -90,6 +93,42 @@ foreach ($d in @($Build, $OutDir)) {
 
 function Step($n, $msg) { Write-Host ''; Write-Host "[$n] $msg" -ForegroundColor Yellow }
 function Ok($msg) { Write-Host "    $msg" -ForegroundColor Green }
+
+# ── 0. 内置 API key 核对 ────────────────────────────────────────────────────
+# key 在 pnpm build 时由 rspack 从 .secrets\api-key.txt 注入主包（见 rspack.config.ts），
+# 所以这里不重复注入，只核对 dist 里到底有没有它。「有密钥文件、dist 却没带 key」意味着
+# dist 是更早一次（没有密钥文件时）构建的产物 —— 装出来仍要用户手填 key，属于能跑但
+# 不达预期的静默失效，必须在打包前拦住。日志只打指纹，不出现完整 key。
+$SecretPath = Join-Path $Root '.secrets\api-key.txt'
+$SecretKey = $null
+if (Test-Path -LiteralPath $SecretPath) {
+    $SecretKey = (Get-Content -Raw -LiteralPath $SecretPath).Trim()
+    if ($SecretKey -notmatch '^sk-[A-Za-z0-9]{16,}$') {
+        throw ('密钥文件内容不像 API key（应为单行 sk- 开头的串）：' + $SecretPath)
+    }
+}
+if ($SecretKey) {
+    Step 0 '核对内置 API key'
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $digest = [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($SecretKey))).Replace('-', '').ToLower()
+    $sha.Dispose()
+    $fp = ('{0}…，长度 {1}，sha256 {2}' -f $SecretKey.Substring(0, 4), $SecretKey.Length, $digest.Substring(0, 8))
+    $hit = @(Get-ChildItem -LiteralPath $Front -Recurse -File -Filter *.js |
+        Where-Object { (Get-Content -Raw -LiteralPath $_.FullName).Contains($SecretKey) })
+    if ($hit.Count -eq 0) {
+        $hint = @(
+            'dist 里没有内置 API key，说明它是在没有 .secrets\api-key.txt 时构建的。',
+            '放好密钥文件后重新构建再打包：',
+            '    pnpm --config.shell-emulator=true build'
+        ) -join [Environment]::NewLine
+        throw $hint
+    }
+    Ok ("内置 key 已在主包内（$($hit.Count) 个 js 文件，指纹 $fp）")
+} else {
+    Write-Host ''
+    Write-Host '[0] 未找到 .secrets\api-key.txt' -ForegroundColor DarkYellow
+    Write-Host '    本次 APK 不含内置 key：与网页版一致，用户需在设置里手动填写。' -ForegroundColor DarkYellow
+}
 
 # ── 1. 暂存 assets ──────────────────────────────────────────────────────────
 Step 1 '暂存前端资源'

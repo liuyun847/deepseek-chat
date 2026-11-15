@@ -8,6 +8,8 @@ build/
 .env
 .env.*
 !.env.example
+# 本机密钥：构建期注入产物的 API key（rspack.config.ts 读它，tools\build-apk.ps1 核对它）
+.secrets/
 tmp/
 # 多端同步服务的本地数据文件（sync-server/server.mjs --data 的默认位置）
 sync-server/data/

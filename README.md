@@ -65,11 +65,11 @@ The repo can also be packaged as an installable APK: the same `dist/` output is 
 .\tools\setup-toolchain.ps1                     # one-off: JDK 17 + build-tools 35.0.1 + android-35 into %USERPROFILE%\.devtools
 pnpm --config.shell-emulator=true build       # frontend -> dist/
 .\tools\build-apk.ps1                          # -> dist-apk\deepseek-chat.apk
-.\tools\verify-apk.ps1                         # 32 assertions on the artifact
+.\tools\verify-apk.ps1                         # 33 assertions on the artifact
 adb install -r dist-apk\deepseek-chat.apk
 ```
 
-- The API key is **not** baked into the APK. Enter it in Settings; it is stored in localStorage of the app origin. Nothing else is injected at build time.
+- The API key can be **baked in at build time** from a local secret file: put the key in `.secrets/api-key.txt` (single line, git-ignored) and the next `pnpm build` injects it into the main bundle — the APK and the static site then work right after installing/opening, with no setup. Without that file the build falls back to the original flow: enter the key in Settings, where it is stored in localStorage of the app origin. A key entered in Settings always wins over the built-in one, and `tools\verify-apk.ps1` checks the packaged key against the secret file (fingerprint only, never the key itself).
 - Package name stays `ds.app` and the signing key is `android\debug.keystore` (git-ignored), so a new APK can be installed **over** an existing install. Lose that keystore and you must uninstall first, which wipes local chats.
 - `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.2.0 → 200). Bump `package.json` before shipping.
 - `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), only the `INTERNET` permission.

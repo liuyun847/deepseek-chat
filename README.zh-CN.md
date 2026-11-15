@@ -65,11 +65,11 @@ node sync-server/server.mjs --port 7788
 .\tools\setup-toolchain.ps1                     # 一次性：JDK 17 + build-tools 35.0.1 + android-35 装到 %USERPROFILE%\.devtools
 pnpm --config.shell-emulator=true build       # 前端 -> dist/
 .\tools\build-apk.ps1                          # -> dist-apk\deepseek-chat.apk
-.\tools\verify-apk.ps1                         # 32 项产物校验
+.\tools\verify-apk.ps1                         # 33 项产物校验
 adb install -r dist-apk\deepseek-chat.apk
 ```
 
-- API Key **不写进 APK**：在设置里填，存在应用源的 localStorage 里。构建期不注入任何密钥。
+- API Key **可以在构建期写入产物**：把 key 放进 `.secrets/api-key.txt`（单行，已被 .gitignore 忽略），下一次 `pnpm build` 会把它注入主包 —— 这样 APK 与网页版装好/打开即可用，不必先配置。没有该文件时构建回退到原流程：在设置里填，存在应用源的 localStorage 里。设置里手填的 key 始终优先于内置值，`tools\verify-apk.ps1` 会把包里的 key 与密钥文件比对（日志只打指纹，不打 key 本身）。
 - 包名沿用 `ds.app`，签名私钥是 `android\debug.keystore`（已 gitignore），因此新包能**覆盖升级**已装版本。丢了这份私钥就只能先卸载，本地聊天记录会一起丢。
 - `versionName` 取自 `package.json`；`versionCode` 按 `major*10000 + minor*100 + patch` 折算（0.2.0 → 200）。发版前先改 `package.json`。
 - `minSdk 26`、`targetSdk 34`（升到 35 会被 Android 15 强制 edge-to-edge），权限只有 `INTERNET` 一条。
