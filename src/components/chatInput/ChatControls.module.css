@@ -1,0 +1,40 @@
+/* 输入区顶部的模型 / 推理强度控制条：与下方开关行同一视觉语言，尺寸略收 */
+.bar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 10px;
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 10px 12px 0;
+  cursor: default;
+}
+
+.control {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* 模型名可能很长：只让选择器收缩并省略，标签始终完整 */
+.label {
+  flex-shrink: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* .trigger 自带 min-width: 90px，双类提高优先级，允许窄屏收缩成省略号 */
+.bar .select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 强度只有两三个字，留个下限免得被挤成一小块 */
+.bar .effort {
+  min-width: 56px;
+}

@@ -151,7 +151,10 @@ export const useAnchoredPosition = <T extends HTMLElement, F extends HTMLElement
         resolved === 'top'
           ? Math.max(VIEWPORT_PADDING, rect.top - offset - height)
           : rect.bottom + offset,
-      right: Math.max(VIEWPORT_PADDING, window.innerWidth - rect.right),
+      // 贴右对齐沿用 right（浮层宽度未知时也不会抖）；其余对齐按左边缘收口到视口内
+      ...(align === 'end'
+        ? { right: Math.max(VIEWPORT_PADDING, window.innerWidth - rect.right) }
+        : { left: alignLeft(rect, floating.getBoundingClientRect().width, align, alignOffset) }),
       maxHeight: height,
     })
   }, [align, alignOffset, applyPosition, floatingRef, getAnchor, maxHeight, minSpace, offset, side])

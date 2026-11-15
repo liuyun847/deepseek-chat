@@ -33,7 +33,7 @@ The output is written to `dist/`. Deploy it to a static web server or open `dist
 - Streaming replies, deep thinking with selectable reasoning effort (low / high / max), smart search, link reading, and source citations; stop generation or continue eligible replies.
 - Upload, paste, or drag and drop attachments.
 - Markdown, syntax highlighting, KaTeX math, and Mermaid diagrams.
-- Model selection (list from `GET /models`), named system prompts (Settings → System prompts), Simplified Chinese and English, light and dark themes, mobile layouts, location settings, and chat history import and export.
+- Model and reasoning-effort pickers on the chat input bar (the same values as Settings → General, always in sync), model list from `GET /models`, named system prompts (Settings → System prompts) with search by name or content, Simplified Chinese and English, light and dark themes, mobile layouts, location settings, and chat history import and export.
 
 ## Data and storage
 
@@ -88,7 +88,7 @@ adb install -r dist-apk\deepseek-chat.apk
 
 [rspack.config.ts](rspack.config.ts) uses `https://api.deepseek.com` by default. Use `createConfig({ apiOrigin, devServer })` to customize the API origin and development server proxy.
 
-Chat uses `deepseek-flash` by default and lets you pick another model in Settings. Reasoning effort is sent as `output_config.effort` (`low` / `high` / `max`, default `high`) and omitted when deep thinking is off. Requests go through Anthropic-compatible Messages / Files APIs. The request `system` field carries the prompt selected in Settings → System prompts (a built-in default is used when none is selected); switching it only affects later requests and never rewrites stored messages. Requests include extensions for search, link reading, titles, and `latest_reminder`, so the configured service must support the corresponding capabilities. Supported attachment formats are determined by server-side validation.
+Chat uses `deepseek-flash` by default and lets you pick another model either on the chat input bar or in Settings → General (both edit the same setting). Reasoning effort is sent as `output_config.effort` (`low` / `high` / `max`, default `high`) and omitted when deep thinking is off. Requests go through Anthropic-compatible Messages / Files APIs. The request `system` field carries the prompt selected in Settings → System prompts (a built-in default is used when none is selected); switching it only affects later requests and never rewrites stored messages. Requests include extensions for search, link reading, titles, and `latest_reminder`, so the configured service must support the corresponding capabilities. Supported attachment formats are determined by server-side validation.
 
 ```text
 src/

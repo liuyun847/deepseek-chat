@@ -1,7 +1,8 @@
+import { useEffect } from 'react'
 import { create } from 'zustand'
 import { listModels } from './api/client.js'
 import type { ModelInfo } from './api/types.js'
-import { DEFAULT_MODEL } from './settings.js'
+import { DEFAULT_MODEL, useSettings } from './settings.js'
 
 /**
  * 内置兜底模型：没有 API Key 或 GET /models 拉取失败时使用。
@@ -26,7 +27,7 @@ type ModelListState = {
   error: string | null
 }
 
-/** 模型列表只在设置面板展示，放模块级 store 便于切换页签/重开弹窗时复用 */
+/** 模型列表在设置面板与对话页控制条各展示一次，放模块级 store 让两处共用同一份结果 */
 export const useModelList = create<ModelListState>(() => ({
   status: 'builtin',
   models: BUILTIN_MODELS,
@@ -92,4 +93,39 @@ export const loadModels = async (apiKey: string | null, force = false): Promise<
       error: error instanceof Error ? error.message : String(error),
     })
   }
+}
+
+/** 模型下拉的一项：值与展示名，设置面板与对话页共用 */
+export type ModelChoice = { value: string; label: string }
+
+/**
+ * 模型下拉的数据：当前值、选项、拉取状态与失败原因。
+ * 设置面板（通用设置）与对话页输入区控制条共用，两处永远显示同一份列表和同一个当前值，
+ * 改动只经 `setModel` 写回 `useSettings`，因此不存在两份状态需要互相同步。
+ *
+ * @returns model 当前模型 id；options 选项（含已选模型的兜底项）；status 列表来源；error 失败原因
+ */
+export const useModelChoices = (): {
+  model: string
+  options: ModelChoice[]
+  status: ModelListStatus
+  error: string | null
+} => {
+  const apiKey = useSettings((state) => state.apiKey)
+  const model = useSettings((state) => state.model)
+  const status = useModelList((state) => state.status)
+  const models = useModelList((state) => state.models)
+  const error = useModelList((state) => state.error)
+
+  // 首次渲染（对话页或设置面板）时拉一次；同一个 Key 由 loadModels 内部缓存，不会重复请求
+  useEffect(() => {
+    void loadModels(apiKey)
+  }, [apiKey])
+
+  const options = models.map((item) => ({ value: item.id, label: item.name || item.id }))
+  // 已选模型不在列表里（回退列表、服务端下线）时仍照原样显示，不能悄悄换成别的模型
+  if (!options.some((option) => option.value === model)) {
+    options.unshift({ value: model, label: model })
+  }
+  return { model, options, status, error }
 }

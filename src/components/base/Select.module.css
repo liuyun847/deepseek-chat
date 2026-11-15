@@ -41,6 +41,20 @@
   }
 }
 
+/* 紧凑尺寸：对话页输入区控制条这类窄高容器里用，高度、内边距、字号一起收 */
+.compact {
+  min-width: 0;
+  height: 32px;
+  padding: 0 26px 0 10px;
+  border-radius: 16px;
+  font-size: 13px;
+  line-height: 18px;
+
+  & .arrow {
+    right: 10px;
+  }
+}
+
 .open {
   color: var(--dsw-alias-label-tertiary);
 }

@@ -1,5 +1,6 @@
 declare const styles: {
   readonly "trigger": string;
+  readonly "compact": string;
   readonly "open": string;
   readonly "placeholder": string;
   readonly "arrow": string;

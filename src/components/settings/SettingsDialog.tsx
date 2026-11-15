@@ -1,5 +1,5 @@
 import clsx from 'clsx'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import {
   IconDarkOutline16,
   IconDataOutline16,
@@ -20,10 +20,10 @@ import {
 import { useIsMobile } from '../../app/viewport.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
-import { loadModels, useModelList } from '../../services/models.js'
-import type { ReasoningEffort } from '../../services/api/types.js'
+import { loadModels, useModelChoices } from '../../services/models.js'
 import {
   isChineseBrowser,
+  REASONING_EFFORT_OPTIONS,
   setLocale,
   setLocation,
   setModel,
@@ -316,26 +316,13 @@ const LocaleSetting = () => {
 
 /**
  * 模型选择：列表来自 GET /models，没有 API Key 或拉取失败时回退到内置列表并说明原因。
- * 切换只改设置，不回写已有会话的消息记录。
+ * 切换只改设置，不回写已有会话的消息记录。对话页输入区的控制条共用 `useModelChoices`。
  */
 const ModelSetting = () => {
   const t = useTranslate()
   const apiKey = useSettings((state) => state.apiKey)
-  const model = useSettings((state) => state.model)
-  const status = useModelList((state) => state.status)
-  const models = useModelList((state) => state.models)
-  const error = useModelList((state) => state.error)
+  const { model, options, status, error } = useModelChoices()
 
-  // 打开设置或换 Key 时拉一次；同一个 Key 由 loadModels 内部缓存，不重复请求
-  useEffect(() => {
-    void loadModels(apiKey)
-  }, [apiKey])
-
-  const options = models.map((item) => ({ value: item.id, label: item.name || item.id }))
-  // 已选模型不在列表里（回退列表、服务端下线）时仍照原样显示，不能悄悄换成别的模型
-  if (!options.some((option) => option.value === model)) {
-    options.unshift({ value: model, label: model })
-  }
   const failure: Status =
     status === 'failed'
       ? {
@@ -376,15 +363,10 @@ const ModelSetting = () => {
   )
 }
 
-const effortOptions: { value: ReasoningEffort; label: TranslationKey }[] = [
-  { value: 'low', label: 'settingsReasoningEffortLow' },
-  { value: 'high', label: 'settingsReasoningEffortHigh' },
-  { value: 'max', label: 'settingsReasoningEffortMax' },
-]
-
 /**
  * 推理强度：三档写进请求的 output_config.effort。
  * 关闭深度思考时置灰不可选，但不清空已选档位，重新开启后沿用上次选择。
+ * 对话页输入区的控制条有同一份选项与同一套规则（`REASONING_EFFORT_OPTIONS`）。
  */
 const ReasoningEffortSetting = () => {
   const t = useTranslate()
@@ -402,7 +384,10 @@ const ReasoningEffortSetting = () => {
           className={styles.effortSelect}
           value={reasoningEffort}
           disabled={!thinking}
-          options={effortOptions.map((option) => ({ value: option.value, label: t(option.label) }))}
+          options={REASONING_EFFORT_OPTIONS.map((option) => ({
+            value: option.value,
+            label: t(option.label),
+          }))}
           onChange={setReasoningEffort}
         />
       }

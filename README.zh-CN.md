@@ -33,7 +33,7 @@ pnpm build
 - 流式回答、深度思考（可选低 / 高 / 最高推理强度）、智能搜索、链接阅读与来源引用；支持停止和符合条件的继续生成。
 - 附件上传、粘贴与拖拽。
 - Markdown、代码高亮、KaTeX 公式和 Mermaid 图表。
-- 模型选择（列表来自 `GET /models`）、可命名的系统提示词库（设置 → 系统提示词）、简体中文与英文、浅色与深色主题、移动端布局、位置设置、历史导入导出。
+- 对话页输入区可直接选模型与推理强度（与设置 → 通用设置里的两项同一份值，改一处另一处跟着变）；模型列表来自 `GET /models`；可命名的系统提示词库（设置 → 系统提示词，支持按名称与内容搜索）；简体中文与英文、浅色与深色主题、移动端布局、位置设置、历史导入导出。
 
 ## 数据
 
@@ -88,7 +88,7 @@ adb install -r dist-apk\deepseek-chat.apk
 
 [rspack.config.ts](rspack.config.ts) 默认连接 `https://api.deepseek.com`。`createConfig({ apiOrigin, devServer })` 支持自定义 API 地址和开发服务器代理。
 
-聊天默认使用 `deepseek-flash`，可在设置里切换模型；推理强度按 `output_config.effort` 传 `low` / `high` / `max`（默认 `high`），关闭深度思考时不传该字段。通过 Anthropic 兼容的 Messages / Files API 通信。请求的 `system` 字段取自设置 → 系统提示词里选中的那条（未选中时用内置默认项），切换只影响之后的请求，不改写已保存的消息。请求使用搜索、链接阅读、标题和 `latest_reminder` 等扩展，接入服务需支持相应能力。附件实际支持的格式以服务端校验为准。
+聊天默认使用 `deepseek-flash`，可在对话页输入区或设置 → 通用设置里切换模型（两处改的是同一个设置）；推理强度按 `output_config.effort` 传 `low` / `high` / `max`（默认 `high`），关闭深度思考时不传该字段。通过 Anthropic 兼容的 Messages / Files API 通信。请求的 `system` 字段取自设置 → 系统提示词里选中的那条（未选中时用内置默认项），切换只影响之后的请求，不改写已保存的消息。请求使用搜索、链接阅读、标题和 `latest_reminder` 等扩展，接入服务需支持相应能力。附件实际支持的格式以服务端校验为准。
 
 ```text
 src/

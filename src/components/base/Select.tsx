@@ -1,15 +1,19 @@
 import clsx from 'clsx'
 import { useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useAnchoredPosition, useDismiss } from './anchored.js'
+import { useAnchoredPosition, useDismiss, type Align, type Side } from './anchored.js'
 import { IconCheckOutline16, IconChevronDownOutline14 } from './icons.js'
 import styles from './Select.module.css'
 
 export type SelectOption<T extends string> = { value: T; label: string; lang?: string }
 
 /**
- * 胶囊形选择器：触发器高 36px、圆角 18px、浅灰底，下拉菜单选中项右侧打勾；
+ * 胶囊形选择器：触发器默认高 36px、圆角 18px、浅灰底，下拉菜单选中项右侧打勾；
  * 点外部或 Esc 关闭。value 不匹配任何选项时触发器显示 placeholder。
+ *
+ * - `side` / `align`：菜单优先展开的方向与水平对齐，默认向下、贴右。
+ *   靠近页面底部的控件（如对话页输入区控制条）传 `side="top"`，避免菜单盖住输入框。
+ * - `compact`：更矮更窄的尺寸，用于对话页这类空间紧张的控制条。
  */
 export const Select = <T extends string>({
   value,
@@ -19,6 +23,9 @@ export const Select = <T extends string>({
   ariaLabel,
   className,
   disabled = false,
+  side = 'bottom',
+  align = 'end',
+  compact = false,
 }: {
   value: T
   options: SelectOption<T>[]
@@ -27,14 +34,17 @@ export const Select = <T extends string>({
   ariaLabel?: string
   className?: string
   disabled?: boolean
+  side?: Side
+  align?: Align
+  compact?: boolean
 }) => {
   const [open, setOpen] = useState(false)
   const current = options.find((option) => option.value === value)
-  // 菜单贴右侧展开，最多 320px 高，超出在菜单内滚动
+  // 菜单最多 320px 高，超出在菜单内滚动
   const { anchorRef, floatingRef, position } = useAnchoredPosition<
     HTMLButtonElement,
     HTMLDivElement
-  >(open, { align: 'end', maxHeight: 320, minSpace: 160 })
+  >(open, { side, align, maxHeight: 320, minSpace: 160 })
   // Esc 只关菜单，不让外层弹窗一起关闭
   useDismiss(open, [anchorRef, floatingRef], () => setOpen(false), { captureEscape: true })
 
@@ -43,7 +53,7 @@ export const Select = <T extends string>({
       <button
         ref={anchorRef}
         type="button"
-        className={clsx(styles.trigger, open && styles.open, className)}
+        className={clsx(styles.trigger, compact && styles.compact, open && styles.open, className)}
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
