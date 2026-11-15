@@ -37,6 +37,11 @@ declare const styles: {
   readonly "promptActiveCell": string;
   readonly "promptActions": string;
   readonly "promptSelect": string;
+  readonly "promptSearch": string;
+  readonly "promptSearchIcon": string;
+  readonly "promptSearchInput": string;
+  readonly "promptSearchClear": string;
+  readonly "promptEmpty": string;
   readonly "promptList": string;
   readonly "promptItem": string;
   readonly "promptItemActive": string;

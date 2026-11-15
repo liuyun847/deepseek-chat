@@ -488,6 +488,77 @@
   max-width: min(285px, 100%);
 }
 
+/* 搜索框：左图标 + 输入框 + 清空按钮，边框在 focus-within 时变蓝 */
+.promptSearch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: 38px;
+  margin: 4px 0 8px;
+  padding: 0 6px 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out);
+
+  &:focus-within {
+    border-color: var(--dsw-alias-brand-primary);
+  }
+}
+
+.promptSearchIcon {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.promptSearchInput {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+
+  &::placeholder {
+    color: var(--dsw-alias-label-caption);
+  }
+}
+
+.promptSearchClear {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+  transition: background-color var(--ds-transition-duration) var(--ds-ease-in-out);
+
+  &:hover {
+    background-color: var(--dsw-alias-interactive-bg-hover);
+  }
+}
+
+/* 搜索无结果：占位说明，不改变列表区高度逻辑（列表此时不渲染） */
+.promptEmpty {
+  padding: 24px 12px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+}
+
 .promptList {
   display: flex;
   flex-direction: column;
@@ -634,6 +705,15 @@
   .promptSelect {
     flex: 1 1 auto;
     max-width: none;
+  }
+
+  .promptSearch {
+    min-height: 44px;
+  }
+
+  .promptSearchInput {
+    height: 40px;
+    font-size: 16px;
   }
 
   .promptItemActions > button {
