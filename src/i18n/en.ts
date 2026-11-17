@@ -213,6 +213,8 @@ export const en = {
   syncServerPlaceholder: 'http://127.0.0.1:7788',
   syncServerDescription:
     'Address of the machine running sync-server. For other devices on the LAN, use that machine IP and port.',
+  syncServerSameOrigin:
+    'Leave it empty to use this page\u2019s own origin: {url} (the local service forwards it to 127.0.0.1:7788, where phone-synced data lives). A typed address always wins.',
   syncTest: 'Test connection',
   syncTesting: 'Testing...',
   syncTestOk: 'Connected: {name} — {sessions} chats, {messages} messages, {prompts} prompts on the server',
@@ -239,6 +241,7 @@ export const en = {
   syncErrorUrl: 'Invalid server URL. Enter a full address such as http://127.0.0.1:7788',
   syncErrorNetwork: 'Cannot reach the sync server. Check the address, the port, and that the server is running.',
   syncErrorNotFound: 'That address is not a sync server for this app (wrong port or path)',
+  syncErrorNotRunning: 'Sync service is not running: start sync-server (127.0.0.1:7788) and sync again',
   syncErrorServer: 'Sync server error: {message}',
   syncErrorResponse: 'The sync server returned an unrecognized response',
   syncErrorVersion: 'The sync server speaks a newer protocol version. Update this app first.',

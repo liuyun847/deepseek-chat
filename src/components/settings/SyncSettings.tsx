@@ -2,8 +2,9 @@ import clsx from 'clsx'
 import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import { useChatStore } from '../../services/chat/store.js'
+import { useLocalService } from '../../services/localService.js'
 import { setSyncDeviceName, setSyncServerUrl, useSettings } from '../../services/settings.js'
-import { SyncError } from '../../services/sync/api.js'
+import { resolveServerUrl, sameOriginServer, SyncError } from '../../services/sync/api.js'
 import {
   prepareFirstSync,
   refreshLastSync,
@@ -84,6 +85,10 @@ const useLastSyncText = (info: LastSyncInfo | null): string => {
 
 /**
  * 多端同步设置：服务地址、设备名、测试连接、立即同步、上次同步结果。
+ *
+ * 地址可以留空：页面由本机服务（local-server/）托管时，留空即走同源反代 /sync/api，
+ * 由它转到 127.0.0.1:7788 —— 浏览器零配置就能看到手机同步来的会话。填了地址则按填的连。
+ *
  * 首次同步（本机从没同步过且远端已有记录）先弹确认，写清是「逐条合并」而不是整库覆盖。
  */
 export const SyncSettings = () => {
@@ -95,6 +100,8 @@ export const SyncSettings = () => {
   const last = useSync((state) => state.last)
   const streaming = useChatStore((state) => Object.keys(state.streaming).length > 0)
   const importing = useChatStore((state) => state.importingHistory)
+  // 本页是否由本机服务托管：决定「地址留空」时能不能走同源反代
+  const localService = useLocalService((state) => state.active)
   const [server, setServer] = useState(() => useSettings.getState().syncServerUrl)
   const [deviceName, setDeviceName] = useState(() => useSettings.getState().syncDeviceName)
   const [testStatus, setTestStatus] = useState<Status>(null)
@@ -111,11 +118,14 @@ export const SyncSettings = () => {
     setSyncDeviceName(deviceName)
   }
 
+  // 留空时地址由同源反代兜底：只有「既没填、本机服务也不在」才拦着不让点
+  const sameOrigin = localService ? sameOriginServer() : null
+  const effectiveServer = resolveServerUrl(server, localService)
   const disabledReason = importing
     ? t('syncErrorImporting')
     : streaming
       ? t('syncErrorStreaming')
-      : server.trim()
+      : effectiveServer
         ? null
         : t('syncNeedsServer')
   const disabled = disabledReason !== null || busy !== null || working
@@ -132,6 +142,7 @@ export const SyncSettings = () => {
           name: health.name,
           sessions: health.sessions,
           messages: health.messages,
+          prompts: health.prompts,
         }),
       })
     } catch (error) {
@@ -177,7 +188,11 @@ export const SyncSettings = () => {
       <Row
         label={t('syncServerLabel')}
         htmlFor={serverId}
-        description={t('syncServerDescription')}
+        description={
+          server.trim() || !sameOrigin
+            ? t('syncServerDescription')
+            : t('syncServerSameOrigin', { url: sameOrigin })
+        }
         status={testStatus}
         action={
           <div className={syncStyles.field}>
@@ -200,7 +215,7 @@ export const SyncSettings = () => {
               variant="outlined"
               size="m"
               className={styles.cellButton}
-              disabled={disabled || !server.trim()}
+              disabled={disabled}
               onClick={() => void onTest()}
             >
               {t(busy === 'test' ? 'syncTesting' : 'syncTest')}

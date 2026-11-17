@@ -1,4 +1,5 @@
 import type { TranslationKey } from '../../i18n/index.js'
+import { isLoopbackHostname } from '../localService.js'
 import {
   normalizeRecord,
   SYNC_FORMAT,
@@ -42,7 +43,98 @@ export const normalizeServerUrl = (input: string): string | null => {
   }
 }
 
+/**
+ * 同源同步的「服务地址」在本页同源下的前缀。
+ *
+ * 服务地址的语义是「端点 /api/* 之前的基址」：手填 http://127.0.0.1:7788 时，
+ * 请求落到 http://127.0.0.1:7788/api/health。同源场景同理 —— 基址取 /sync，
+ * 端点就是 /sync/api/health，local-server 再把 /sync/api/* 转到 127.0.0.1:7788/api/*。
+ * 因此这里是 /sync 而不是 /sync/api（后者会让端点变成 /sync/api/api/health）。
+ */
+export const SAME_ORIGIN_SYNC_BASE = '/sync'
+
+/**
+ * 本页同源的反代地址；不在回环 http(s) 页面上时返回 null。
+ *
+ * APK（https://dsapp.local）与 file:// 都拿不到回环 host，因此这里恒为 null ——
+ * 这也是「APK 不会误用同源」的第一道保险（第二道在 resolveServerUrl 的 localService 参数）。
+ *
+ * @returns 形如 http://127.0.0.1:7789/sync（端点即 /sync/api/*）
+ */
+export const sameOriginServer = (): string | null => {
+  if (typeof location === 'undefined' || !/^https?:$/.test(location.protocol)) {
+    return null
+  }
+  if (!isLoopbackHostname(location.hostname)) {
+    return null
+  }
+  return location.origin + SAME_ORIGIN_SYNC_BASE
+}
+
+/**
+ * 这次同步实际连哪个服务地址。
+ *
+ * 优先级：设置里手填的地址 > 同源反代（仅当本页确实由本机服务托管）> null（没得连）。
+ * 手填优先是刻意的：填了就说明用户明确要连那台机器（比如局域网里跑 sync-server 的电脑），
+ * 此时不能因为「本页恰好也被 7789 托管」就偷偷改道。
+ *
+ * @param typed 设置里的 syncServerUrl 原始值
+ * @param localService 本页是否由本机服务托管（即 localServiceReady 的结果）
+ * @returns 规范化后的地址；两者都不成立时 null
+ */
+export const resolveServerUrl = (typed: string, localService: boolean): string | null => {
+  const configured = normalizeServerUrl(typed)
+  if (configured) {
+    return configured
+  }
+  return localService ? sameOriginServer() : null
+}
+
 type RequestOptions = { body?: unknown; timeout?: number }
+
+/** 本机服务（local-server）在同步服务连不上时回的 error.type */
+const SYNC_UPSTREAM_DOWN = 'sync_upstream_down'
+/** 同上：同步服务 10 秒没响应 */
+const SYNC_UPSTREAM_TIMEOUT = 'sync_upstream_timeout'
+
+/**
+ * 读错误响应体，尽量给出一句人能看懂的原因。
+ *
+ * 两种上游的错体形状不同：sync-server 是 { ok:false, error:'中文原因' }，
+ * 本机服务是 { error: { type, message } }。type 决定走哪条固定文案，
+ * message 填进 {message} 占位符；解析不出来就退回截断的原文。
+ *
+ * @param response 失败的响应
+ * @returns 结构化的 type 与 message
+ */
+const readErrorBody = async (response: Response): Promise<{ type: string; message: string }> => {
+  let text = ''
+  try {
+    text = await response.text()
+  } catch {
+    text = ''
+  }
+  if (!text) {
+    return { type: '', message: String(response.status) }
+  }
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown } | null
+    const error = parsed?.error
+    if (typeof error === 'string') {
+      return { type: '', message: error.slice(0, 200) }
+    }
+    if (error && typeof error === 'object') {
+      const typed = error as { type?: unknown; message?: unknown }
+      return {
+        type: typeof typed.type === 'string' ? typed.type : '',
+        message: typeof typed.message === 'string' ? typed.message.slice(0, 200) : text.slice(0, 200),
+      }
+    }
+  } catch {
+    // 不是 JSON：按原文
+  }
+  return { type: '', message: text.slice(0, 200) }
+}
 
 /**
  * 发一次 JSON 请求并把错误映射成 SyncError。
@@ -71,18 +163,21 @@ const request = async (url: string, options: RequestOptions = {}): Promise<unkno
     clearTimeout(timer)
   }
   if (!response.ok) {
-    let detail = ''
-    try {
-      detail = await response.text()
-    } catch {
-      detail = ''
+    const { type, message } = await readErrorBody(response)
+    // 同步服务没起来（本机服务回的 502）：换成一句能照着做的固定文案，别把 JSON 拼进提示
+    if (type === SYNC_UPSTREAM_DOWN) {
+      throw new SyncError('syncErrorNotRunning', message)
+    }
+    // 卡住不回话（本机服务的 10 秒超时）：按「连不上」处理，同样给固定文案
+    if (type === SYNC_UPSTREAM_TIMEOUT) {
+      throw new SyncError('syncErrorNetwork')
     }
     if (response.status === 404) {
       throw new SyncError('syncErrorNotFound')
     }
     throw new SyncError(
       response.status >= 500 ? 'syncErrorServer' : 'syncErrorResponse',
-      detail.slice(0, 200) || String(response.status)
+      message || String(response.status)
     )
   }
   try {

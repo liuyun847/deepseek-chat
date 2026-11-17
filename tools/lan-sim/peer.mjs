@@ -13,6 +13,9 @@
  *
  * 用法：
  *   node peer.mjs --id dev-a --name 手机A --pass 12345678 --seed a
+ *   node peer.mjs --id dev-e2e --name 手机E2E --pass <口令> --udp-port 47823 --seed e2e
+ *     （e2e = 只有 1 个会话「端到端验收 2026-11-17」+ 1 条消息，用于验收链路；
+ *      live = 只有 1 个会话「不重启可见 2026-11-17」+ 1 条消息，用于验证外部写入免重启）
  *   stdin 命令：stats / dump / edit <sessionId> <text> / delete-session <id> / probe <host:port> / quit
  */
 import dgram from 'node:dgram'
@@ -138,6 +141,31 @@ if (seed === 'a') {
       createdAt: 1003,
       updatedAt: 2003,
       messages: [message('m9', 'user', '不该同步出去的私货', 1500)],
+    },
+  ]
+} else if (seed === 'e2e') {
+  // 端到端验收用：正好 1 个会话 + 1 条消息，标题能一眼看出是谁造的
+  // （跑完留在正式数据里也不碍事，它是真同步产生的记录）
+  const now = Date.now()
+  store.sessions = [
+    {
+      id: 'e2e-20261117',
+      title: '端到端验收 2026-11-17',
+      createdAt: now - 60000,
+      updatedAt: now - 30000,
+      messages: [message('e2e-20261117-m1', 'user', '这条消息由 lan-sim 手机端经 P2P 推来', now - 45000)],
+    },
+  ]
+} else if (seed === 'live') {
+  // 「数据文件被外部更新后不重启 sync-server 也能看到」验收用：新 id、新标题，不碰已有记录
+  const now = Date.now()
+  store.sessions = [
+    {
+      id: 'live-20261117',
+      title: '不重启可见 2026-11-17',
+      createdAt: now - 60000,
+      updatedAt: now - 30000,
+      messages: [message('live-20261117-m1', 'user', '这条消息推到 lan-peer 之后，7788 不重启就该读得到', now - 45000)],
     },
   ]
 }

@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import type { TranslationKey } from '../../i18n/index.js'
+import { localServiceReady } from '../localService.js'
 import * as db from '../chat/db.js'
 import { flushChatStorage, reloadChatFromStorage, useChatStore } from '../chat/store.js'
 import { useSettings } from '../settings.js'
 import {
   fetchHealth,
   fetchState,
-  normalizeServerUrl,
   pushRecords,
+  resolveServerUrl,
   SyncError,
   type HealthInfo,
 } from './api.js'
@@ -32,9 +33,21 @@ type SyncState = {
 
 export const useSync = create<SyncState>(() => ({ busy: null, last: null }))
 
-/** 读设置里的服务地址并规范化；没填或格式不对都当作「先配置」 */
-const resolveServer = (): string => {
-  const url = normalizeServerUrl(useSettings.getState().syncServerUrl)
+/**
+ * 决定这次同步连哪个服务。
+ *
+ * 顺序：设置里手填的地址优先；没填且本页由本机服务托管时，用同源反代 /sync/api
+ * （local-server 再转到 127.0.0.1:7788），于是浏览器零配置就能拉到手机同步来的数据。
+ * APK 与 file:// 页面探测不到本机服务，行为与以前一致：没填地址就提示先配置。
+ *
+ * @returns 规范化后的服务地址
+ * @throws SyncError('syncErrorUrl') 既没手填、也不在同源场景
+ * @sideeffect 等待一次 localServiceReady（探测只跑一次，已有结果时立即返回）
+ */
+const resolveServer = async (): Promise<string> => {
+  // 探测是异步的：设置页可能在探测落地之前就点了同步，先等出结果再决定走不走同源
+  const localService = await localServiceReady
+  const url = resolveServerUrl(useSettings.getState().syncServerUrl, localService)
   if (!url) {
     throw new SyncError('syncErrorUrl')
   }
@@ -88,7 +101,7 @@ export const testConnection = async (): Promise<HealthInfo> => {
   if (useSync.getState().busy) {
     throw new SyncError('syncErrorBusy')
   }
-  const server = resolveServer()
+  const server = await resolveServer()
   useSync.setState({ busy: 'test' })
   try {
     return await fetchHealth(server)
@@ -102,7 +115,7 @@ export const testConnection = async (): Promise<HealthInfo> => {
  * 只有「本机从没同步过」且「远端已有记录」时才返回内容，其它情况返回 null（直接同步）。
  */
 export const prepareFirstSync = async (): Promise<FirstSyncPreview | null> => {
-  const server = resolveServer()
+  const server = await resolveServer()
   if (await loadLastSync()) {
     return null
   }
@@ -140,7 +153,7 @@ export const runSync = async (): Promise<LastSyncInfo> => {
   if (Object.keys(chat.streaming).length > 0) {
     throw new SyncError('syncErrorStreaming')
   }
-  const server = resolveServer()
+  const server = await resolveServer()
   const device = useSettings.getState().syncDeviceId
   useSync.setState({ busy: 'sync' })
   const at = Date.now()

@@ -7,12 +7,23 @@
  * 产物是明文 JS，谁打开页面谁都能拿到 key。这个服务把 key 留在服务端（环境变量或
  * .secrets/api-key.txt），浏览器只请求同源的 /anthropic/*，由服务端注入鉴权头后转发。
  *
- * 三条路由
+ * 四条路由
  * ========
  *   GET  /api/health     服务状态（是否有 key 只给布尔，绝不回显 key）
  *   *    /anthropic/*    反向代理到 ${UPSTREAM}/anthropic/*
  *   GET  /models         反向代理到 ${UPSTREAM}/models（客户端用它拉模型列表）
+ *   *    /sync/api/*     反向代理到同步服务（sync-server，默认 127.0.0.1:7788）的 /api/*
  *   其它                 静态文件；找不到且没有扩展名时回落到 index.html（SPA）
+ *
+ * 为什么同步也走反代，而不是让本服务直接读 sync-server/data/sync-data.json
+ * =====================================================================
+ * 那份 JSON 已经有两个写者：7788 常驻内存、每次落盘整份覆盖；lan-peer 合并后原子整份写。
+ * 本服务再插一手就成了第三个写者，谁最后落盘谁赢，别人刚写的记录静默消失；而且
+ * 「什么算合法记录 / 怎么按 LWW 合并 / 墓碑怎么推导」只有 sync-server 里有一份权威实现
+ * （与 src/services/sync/protocol.ts 逐条对应），在第二个地方重写一份迟早漂移。
+ * 反代让「读」和「写」都只发生在 7788 内，浏览器拿到的仍是同一份合并后的全量，
+ * 页面上「立即同步」推上去的记录也能由 7788 继续发给手机。
+ * 代价：7788 没在跑时同步不可用（回 502 与中文原因，页面提示「同步服务未启动」）。
  *
  * 安全边界（本机自用服务，默认只信回环）
  * ====================================
@@ -38,7 +49,7 @@ import {
   renameSync,
   statSync,
 } from 'node:fs'
-import { createServer } from 'node:http'
+import { createServer, request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -57,6 +68,18 @@ const LOG_MAX_BYTES = 2 * 1024 * 1024
 
 /** 上游 API 服务 */
 const UPSTREAM = 'https://api.deepseek.com'
+/** 同步服务（sync-server）地址：SYNC_UPSTREAM 可改，测试时指向临时端口 */
+const SYNC_UPSTREAM_RAW = (process.env.SYNC_UPSTREAM ?? 'http://127.0.0.1:7788').trim()
+/**
+ * 同步反代前缀：浏览器打同源 /sync/api/*，本服务把这段前缀换成上游的 /api/*。
+ * 前端（src/services/sync/api.ts）把同源服务地址算成 http://127.0.0.1:<port>/sync，
+ * 拼上它固定的 /api/health 正好落到这里。
+ */
+const SYNC_PREFIX = '/sync/api'
+/** 同步请求体上限：与 sync-server 的 MAX_BODY、客户端 MAX_SYNC_BYTES 一致（32 MB） */
+const MAX_SYNC_BODY_BYTES = 32 * 1024 * 1024
+/** 同步上游多久没响应算失败（毫秒）：本机服务，慢成这样就是卡住了 */
+const SYNC_TIMEOUT_MS = 10_000
 const UPSTREAM_HOST = 'api.deepseek.com'
 /** 服务标识：/api/health 返回它，前端据此确认「是本机服务」而不是别人的同名路径 */
 const SERVICE_ID = 'deepseek-chat-local'
@@ -115,6 +138,20 @@ const FORWARD_REQUEST_HEADERS = [
   'anthropic-beta',
   'anthropic-version',
   'content-type',
+  'user-agent',
+]
+
+/**
+ * 转发给同步服务的请求头。
+ * 与 /anthropic 那套不同：这里不注入任何密钥，但要原样带上口令头 —— 7788 设了
+ * --token 时缺 Authorization / X-Sync-Token 会直接 401，而口令是本机页面的用户自己填的。
+ * 不转发 Origin：本服务已经按同源校验过（见 proxyToSync），上游不需要再看一遍。
+ */
+const SYNC_FORWARD_HEADERS = [
+  'accept',
+  'content-type',
+  'authorization',
+  'x-sync-token',
   'user-agent',
 ]
 
@@ -348,15 +385,19 @@ const respondError = (req, res, status, type, message) => {
  * 这条连接无法复用。
  *
  * @param {import('node:http').ServerResponse} res 响应
+ * @param {number} limitBytes 上限字节数（提示文案按它换算成 MB）
  * @returns {void}
  */
-const respondTooLarge = (res) => {
+const respondTooLarge = (res, limitBytes = MAX_BODY_BYTES) => {
   if (res.headersSent) {
     res.destroy()
     return
   }
   const body = JSON.stringify({
-    error: { type: 'body_too_large', message: '请求体超过上限（20 MB）' },
+    error: {
+      type: 'body_too_large',
+      message: '请求体超过上限（' + Math.round(limitBytes / 1024 / 1024) + ' MB）',
+    },
   })
   res.writeHead(413, {
     'content-type': 'application/json; charset=utf-8',
@@ -568,6 +609,198 @@ const proxyToUpstream = (req, res, upstreamPath, apiKey) => {
   req.on('end', onEnd)
 }
 
+/* ──────────────────────── 同步服务反代 ──────────────────────── */
+
+/**
+ * 同步服务连不上（进程没起来 / 端口不对 / 卡死）时的响应。
+ *
+ * 502 + 结构化中文原因：前端按 error.type 认出「同步服务未启动」，显示一句能照着做的话，
+ * 而不是把这段 JSON 当裸错误拼到界面里。这也是本服务与 sync-server 的刻意差异：
+ * sync-server 自己的错误体是 { ok, error: string }，这里是 { error: { type, message } }，
+ * 与 /anthropic 那套错误体一致，前端一处解析两处通用。
+ *
+ * @param {import('node:http').ServerResponse} res 响应
+ * @param {string} type 错误类型（sync_upstream_down / sync_upstream_timeout）
+ * @param {string} message 中文说明（含怎么修）
+ * @returns {void}
+ */
+const respondSyncDown = (res, type, message) => {
+  if (res.headersSent) {
+    res.destroy()
+    return
+  }
+  const body = JSON.stringify({ ok: false, error: { type, message } })
+  res.writeHead(502, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+    'cache-control': 'no-store',
+  })
+  res.end(body)
+}
+
+/**
+ * 把 /sync/api/* 反代到同步服务（sync-server）的 /api/*。
+ *
+ * 与 proxyToUpstream 的差别：不注入任何密钥（同步口令由页面自己带），请求体上限按
+ * 32 MB（与 sync-server / 客户端一致），上游是本机明文 HTTP，没有 SSE 那种流式需求，
+ * 但响应照样边收边写，免得整份全量在内存里再拼一遍。
+ *
+ * 安全：沿用 /anthropic 的两道闸（Origin 同源、Host 只认回环）。这两道不是可选的 ——
+ * 本服务转给上游时不带 Origin，sync-server 会把「没有 Origin」当成 curl 一样放行，
+ * 少了这道闸，任意网页就能借 127.0.0.1:7789 读写这台机器的全部会话。
+ *
+ * @param {import('node:http').IncomingMessage} req 请求
+ * @param {import('node:http').ServerResponse} res 响应
+ * @param {string} upstreamPath 上游路径（形如 /api/state，含 query）
+ * @returns {void}
+ */
+const proxyToSync = (req, res, upstreamPath) => {
+  const started = Date.now()
+  const origin = req.headers.origin
+  if (!isSameOrigin(origin, req.headers.host)) {
+    log('warn', '403 跨站同步请求被拒绝：' + req.method + ' ' + upstreamPath + ' Origin=' + String(origin))
+    respondError(req, res, 403, 'cross_origin', '拒绝跨站请求：同步反代只服务本机页面（Origin 与本服务不同源）')
+    return
+  }
+  if (!isLoopbackAuthority(req.headers.host)) {
+    log('warn', '403 非回环 Host 被拒绝：' + String(req.headers.host) + ' ' + upstreamPath)
+    respondError(req, res, 403, 'bad_host', '拒绝非回环 Host 的请求：同步反代只接受 127.0.0.1 / localhost')
+    return
+  }
+  if (!syncUpstream) {
+    respondSyncDown(res, 'sync_upstream_down', '同步服务未启动：本服务没有可用的同步上游地址')
+    return
+  }
+  // 路径里出现 .. 一律不接：反代只映射 /sync/api/<x> → /api/<x>，不需要任何目录语义
+  if (upstreamPath.includes('..')) {
+    respondError(req, res, 400, 'bad_path', '路径非法：同步反代不接受 .. 段')
+    return
+  }
+
+  const declaredLength = Number(req.headers['content-length'])
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_SYNC_BODY_BYTES) {
+    log('warn', '413 同步请求体超限（Content-Length）' + req.method + ' ' + upstreamPath)
+    respondTooLarge(res, MAX_SYNC_BODY_BYTES)
+    req.resume()
+    return
+  }
+
+  const headers = {}
+  for (const name of SYNC_FORWARD_HEADERS) {
+    const value = req.headers[name]
+    if (typeof value === 'string' && value) {
+      headers[name] = value
+    }
+  }
+
+  /**
+   * 请求体读完后打上游，响应边收边写。
+   *
+   * @param {Buffer} body 请求体
+   * @returns {void}
+   */
+  const sendToSync = (body) => {
+    const requestModule = syncUpstream.protocol === 'https:' ? httpsRequest : httpRequest
+    const upstreamReq = requestModule(
+      {
+        protocol: syncUpstream.protocol,
+        hostname: syncUpstream.hostname,
+        port: syncUpstream.port,
+        method: req.method,
+        path: upstreamPath,
+        headers: { ...headers, 'content-length': String(body.length) },
+        timeout: SYNC_TIMEOUT_MS,
+      },
+      (upstreamRes) => {
+        const responseHeaders = {}
+        for (const [name, value] of Object.entries(upstreamRes.headers)) {
+          if (value !== undefined && !DROP_RESPONSE_HEADERS.has(name)) {
+            responseHeaders[name] = value
+          }
+        }
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders)
+        res.flushHeaders()
+        upstreamRes.pipe(res)
+        upstreamRes.on('error', () => res.destroy())
+        res.on('close', () => upstreamRes.destroy())
+        log(
+          'info',
+          req.method + ' ' + upstreamPath + ' -> ' + String(upstreamRes.statusCode) + ' (' + (Date.now() - started) + 'ms)'
+        )
+      }
+    )
+
+    upstreamReq.on('timeout', () => {
+      upstreamReq.destroy(new Error('上游 ' + SYNC_TIMEOUT_MS + 'ms 无响应'))
+    })
+    upstreamReq.on('error', (error) => {
+      const timedOut = error.code === undefined || error.code === 'ETIMEDOUT'
+      log('warn', '同步上游不可用 ' + req.method + ' ' + upstreamPath + '：' + error.message)
+      respondSyncDown(
+        res,
+        timedOut ? 'sync_upstream_timeout' : 'sync_upstream_down',
+        timedOut
+          ? '同步服务没有响应：' + syncUpstream.origin + ' ' + Math.round(SYNC_TIMEOUT_MS / 1000) + ' 秒内没回话，看看端口 ' + syncUpstream.port + ' 上的进程是不是卡住了'
+          : '同步服务未启动：' + syncUpstream.origin + ' 连不上（' + String(error.code) + '）。先运行 node sync-server\\server.mjs --port ' + syncUpstream.port + '，再点「立即同步」。'
+      )
+      upstreamReq.destroy()
+    })
+    res.on('close', () => upstreamReq.destroy())
+    upstreamReq.end(body)
+  }
+
+  /** 已收到的请求体分片；读完再打上游，体积判定因此先于任何上游动作 */
+  const chunks = []
+  let received = 0
+  let rejected = false
+
+  /**
+   * 边读边累计超过上限的处理：先完整回 413，再把剩余请求体读掉丢掉。
+   *
+   * @returns {void}
+   */
+  function rejectOversize() {
+    rejected = true
+    log('warn', '413 同步请求体超限（chunked）' + req.method + ' ' + upstreamPath)
+    respondTooLarge(res, MAX_SYNC_BODY_BYTES)
+    req.removeListener('data', onData)
+    req.removeListener('end', onEnd)
+    req.resume()
+  }
+
+  /**
+   * 收请求体并做体积统计。
+   *
+   * @param {Buffer} chunk 数据块
+   * @returns {void}
+   */
+  function onData(chunk) {
+    if (rejected) {
+      return
+    }
+    received += chunk.length
+    if (received > MAX_SYNC_BODY_BYTES) {
+      rejectOversize()
+      return
+    }
+    chunks.push(chunk)
+  }
+
+  /**
+   * 请求体收完：体积合规才打上游。
+   *
+   * @returns {void}
+   */
+  function onEnd() {
+    if (!rejected) {
+      sendToSync(Buffer.concat(chunks, received))
+    }
+  }
+
+  req.on('data', onData)
+  req.on('end', onEnd)
+}
+
 /* ────────────────────────── 健康检查 ────────────────────────── */
 
 /**
@@ -639,6 +872,39 @@ if (!LOOPBACK_HOSTS.has(host)) {
   process.exit(1)
 }
 
+/**
+ * 解析同步上游（sync-server）地址：只接受回环地址上的 http(s)。
+ *
+ * 为什么限定回环：这个反代把浏览器的同步请求（可能带同步口令）原样转给上游，
+ * 指到局域网/公网地址就等于把本机同步数据的一条通道借出去。要连别的机器上的同步服务，
+ * 直接在设置里手填那台机器的地址（那条路径不经过本服务）。
+ *
+ * @returns {{ protocol: string, hostname: string, port: number, origin: string }} 已归一的上游
+ * @sideeffect 地址非法时打印中文原因并 process.exit(1)
+ */
+const syncUpstream = (() => {
+  let parsed = null
+  try {
+    parsed = new URL(SYNC_UPSTREAM_RAW)
+  } catch {
+    parsed = null
+  }
+  if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:')) {
+    process.stderr.write('SYNC_UPSTREAM 不是合法的 http(s) 地址：' + SYNC_UPSTREAM_RAW + '\n')
+    process.exit(1)
+  }
+  if (!LOOPBACK_HOSTS.has(parsed.hostname.toLowerCase())) {
+    process.stderr.write(
+      '拒绝启动：SYNC_UPSTREAM=' + SYNC_UPSTREAM_RAW + ' 不是回环地址。\n' +
+        '同步反代把浏览器的请求（可能带同步口令）原样转给上游，对局域网/公网开放等于把本机\n' +
+        '同步数据借给同网段的任何设备。去掉 SYNC_UPSTREAM 即默认 http://127.0.0.1:7788。\n'
+    )
+    process.exit(1)
+  }
+  const port = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 80
+  return { protocol: parsed.protocol, hostname: parsed.hostname, port, origin: parsed.origin }
+})()
+
 const { distReady, distHasBakedKey } = inspectDist(apiKey.key)
 const startedAt = Date.now()
 
@@ -693,6 +959,11 @@ const server = createServer((req, res) => {
     proxyToUpstream(req, res, '/models' + search, apiKey)
     return
   }
+  // 同源同步路由：/sync/api/state -> 同步服务的 /api/state（前缀整段换掉，其余原样）
+  if (urlPath === SYNC_PREFIX || urlPath.startsWith(SYNC_PREFIX + '/')) {
+    proxyToSync(req, res, '/api' + urlPath.slice(SYNC_PREFIX.length) + search)
+    return
+  }
   // 浏览器会无条件请求 /favicon.ico：dist 里没有就回 204，别在控制台留一条红的 404
   if (urlPath === '/favicon.ico' && !existsSync(path.join(DIST, 'favicon.ico'))) {
     res.writeHead(204, { 'cache-control': 'public, max-age=86400' })
@@ -720,6 +991,7 @@ server.on('error', (error) => {
 
 server.listen(port, host, () => {
   log('info', '本机服务已启动：http://' + host + ':' + port + '（上游 ' + UPSTREAM + '）')
+  log('info', '同步反代 ' + SYNC_PREFIX + '/* → ' + syncUpstream.origin + '/api/*')
   log('info', '静态目录 ' + DIST + '（' + (distReady ? '就绪' : '缺少 index.html：先跑 pnpm build:web') + '）')
   log(
     'info',

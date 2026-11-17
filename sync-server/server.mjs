@@ -34,6 +34,9 @@
  * 存储
  *   一个 JSON 文件，原子写（先写 .tmp 再 rename），写入去抖 200ms，退出前强制落盘。
  *   文件结构：{ format, version, updatedAt, records: { "kind:id": record } }
+ *   读：/api/{health,state,sync} 处理前先 stat 一次（mtime+size），文件被外部改过（lan-peer 的
+ *   P2P 合并、手工编辑、另一个实例）就重读并按 LWW 并进内存 —— **数据文件被外部更新后不需要
+ *   重启本服务**。读失败（正被原子 rename 替换）最多重试 3 次，仍失败就先用内存视图应答。
  */
 
 import http from 'node:http'
@@ -333,6 +336,71 @@ let store = new Map()
 let dirty = false
 let flushTimer = null
 let writeChain = Promise.resolve()
+/**
+ * 内存这份视图对应磁盘上的哪个版本，形如 `<mtimeMs>:<size>`；null 表示还没跟磁盘对过账。
+ * 用途见 reconcileWithDisk：指纹不一致 = 文件被外部改过（lan-peer 的 P2P 合并、手工编辑、
+ * 另一个 7788 实例），需要重读。
+ */
+let diskSignature = null
+/** 文件正被原子 rename 替换时读会失败：最多重试几次、每次间隔多少毫秒 */
+const RELOAD_ATTEMPTS = 3
+const RELOAD_RETRY_MS = 15
+/** 落盘失败后的自动重试截止时间（毫秒时间戳，0 = 没有在重试窗口里） */
+const FLUSH_RETRY_WINDOW_MS = 10_000
+let flushRetryDeadline = 0
+
+/** 小睡一下（重试退避用） */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/**
+ * 数据文件的版本指纹：(mtimeMs, size)。
+ *
+ * 只做一次 stat，不读内容 —— 它在每个 /api/{health,state,sync} 处理前都会被调用，必须便宜。
+ * mtime 与 size 同时不变的「不同内容」几乎不可能出现：本文件是整份 JSON，任何记录变化都会
+ * 改 size；即使 size 撞车（比如同时一增一删），mtime 也会变。
+ *
+ * @returns 指纹字符串；文件不存在时为 ''（表示「磁盘上还没有文件」）
+ * @throws 除 ENOENT 外的 stat 失败（权限等）原样抛出，由调用方记日志后继续用内存
+ */
+async function statSignature() {
+  try {
+    const stat = await fsp.stat(DATA)
+    return stat.mtimeMs + ':' + stat.size
+  } catch (error) {
+    if (error.code === 'ENOENT') return ''
+    throw error
+  }
+}
+
+/**
+ * 从磁盘读一份完整视图并规范化。
+ *
+ * @returns 记录表；文件不存在或不是本服务的格式时 null（调用方保留现有内存视图）
+ * @throws 读失败（被占用 / 半截 JSON）时原样抛出，由调用方重试
+ */
+async function readStoreFromDisk() {
+  let text
+  try {
+    text = await fsp.readFile(DATA, 'utf8')
+  } catch (error) {
+    if (error.code === 'ENOENT') return null
+    throw error
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch (error) {
+    // 正常路径不会出现（写入方都是「临时文件 + rename」的原子写）；真撞上就让调用方重试
+    throw new Error('数据文件不是合法 JSON：' + error.message)
+  }
+  if (parsed?.format !== SYNC_FORMAT) return null
+  const records = new Map()
+  for (const [key, value] of Object.entries(parsed.records ?? {})) {
+    const record = normalizeRecord(value)
+    if (record) records.set(key, record)
+  }
+  return records
+}
 
 /** 原子落盘：写临时文件再 rename，进程被 kill 也不会留半个 JSON */
 function flush() {
@@ -354,9 +422,32 @@ function flush() {
       await fsp.writeFile(tmp, payload, { encoding: 'utf8', mode: 0o600 })
       if (!IS_WINDOWS) await fsp.chmod(tmp, 0o600).catch(() => {})
       await fsp.rename(tmp, DATA)
+      // 记下自己这一版的指纹：免得下一次请求把刚写下去的内容当成「外部改动」又重读一遍
+      diskSignature = await statSignature()
+      flushRetryDeadline = 0
     })
     .catch((error) => {
       console.error('[sync] 落盘失败:', error.message)
+      // 失败时脏标记已被清掉，但内存里的记录还在、磁盘上还没有：置回脏再排一次。
+      // 只有「已经有新改动在排队」（dirty 为真）时才不用管 —— 那一轮会把最新全量写下去。
+      if (dirty) {
+        return
+      }
+      const now = Date.now()
+      if (flushRetryDeadline === 0) {
+        flushRetryDeadline = now + FLUSH_RETRY_WINDOW_MS
+        console.warn(
+          '[sync] 落盘重试：内存里的记录还没写到磁盘，最多再试 %d 秒（每 %dms 一次）',
+          FLUSH_RETRY_WINDOW_MS / 1000,
+          FLUSH_DELAY
+        )
+      }
+      if (now < flushRetryDeadline) {
+        markDirty()
+        return
+      }
+      flushRetryDeadline = 0
+      console.error('[sync] 落盘连续失败超过 %d 秒，停止自动重试；等下一次改动再写', FLUSH_RETRY_WINDOW_MS / 1000)
     })
   return writeChain
 }
@@ -370,25 +461,146 @@ function markDirty() {
   }, FLUSH_DELAY)
 }
 
-async function load() {
-  try {
-    const parsed = JSON.parse(await fsp.readFile(DATA, 'utf8'))
-    if (parsed?.format !== SYNC_FORMAT) {
-      console.warn('[sync] 数据文件不是本服务的格式，按空库启动:', DATA)
-      return
+/**
+ * 把磁盘上的记录按 LWW 并进内存（是「合并」而不是「整份替换」）。
+ *
+ * 为什么不是替换：文件可能是一份比内存更旧的快照（例如 lan-peer 读到旧版本后又整份写回），
+ * 整份替换会把内存里刚接受、还没落盘的记录悄悄丢掉。按 compareRecords 合并则只做「谁更新
+ * 谁赢」，两个方向都不会丢：外部的新记录被采纳，本地更新的记录保留。
+ *
+ * @param incoming 从磁盘读出来的记录表
+ * @returns 采纳统计；collapsed 是被会话墓碑连带墓碑化的消息数
+ */
+function adoptRecords(incoming) {
+  let added = 0
+  let updated = 0
+  for (const [key, record] of incoming) {
+    const existing = store.get(key)
+    if (!existing) {
+      store.set(key, record)
+      added += 1
+      continue
     }
-    for (const [key, value] of Object.entries(parsed.records ?? {})) {
-      const record = normalizeRecord(value)
-      if (record) store.set(key, record)
-    }
-    console.log('[sync] 已载入 %d 条记录：%s', store.size, DATA)
-  } catch (error) {
-    if (error.code === 'ENOENT') {
-      console.log('[sync] 新建数据文件：%s', DATA)
-    } else {
-      console.warn('[sync] 读不到存档（%s），按空库启动：%s', error.message, DATA)
+    if (compareRecords(record, existing) > 0) {
+      store.set(key, record)
+      updated += 1
     }
   }
+  // 外部带来的会话墓碑要立刻把它的消息也墓碑化（与客户端同一套规则，见 collapseDeletedSessions）
+  const collapsed = collapseDeletedSessions(store)
+  return { added, updated, collapsed }
+}
+
+/**
+ * 数据文件被外部改过就重读并并进内存 —— **不需要重启本服务**。
+ *
+ * 触发场景：手机把记录 P2P 推给 lan-peer，lan-peer 原子写同一份 JSON；本服务常驻内存，
+ * 不主动看文件就永远报着旧数据。这里在每个 /api/{health,state,sync} 处理前先 stat 一次
+ * （只 stat、不读内容，开销可忽略），指纹变了才真正重读。
+ *
+ * 并发：写入方都是「临时文件 + rename」的原子写，读到的要么是旧版本要么是新版本，不会是半截；
+ * 但 Windows 上替换的瞬间可能 EBUSY/EPERM，所以读失败重试 3 次、每次 15ms，日志写明第几次；
+ * 3 次都失败就先用内存视图应答（调用方照常返回 200），下次请求再对账 —— 不 500、不空响应。
+ *
+ * @param where 调用点（写进日志，便于和 curl / 页面操作对齐）
+ * @returns Promise<void>
+ * @sideeffect 可能触发一次落盘（采纳了外部记录时，把合并后的并集写回文件）
+ */
+async function reconcileWithDisk(where) {
+  // 自己的改动还在 200ms 防抖窗口里：先落盘，否则下面会读到不含它们的旧文件
+  if (dirty) {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    await flush()
+  }
+  let signature
+  try {
+    signature = await statSignature()
+  } catch (error) {
+    console.warn('[sync] 检查数据文件失败（%s）：%s', where, error.message)
+    return
+  }
+  if (signature === diskSignature) return
+
+  for (let attempt = 1; attempt <= RELOAD_ATTEMPTS; attempt += 1) {
+    try {
+      const records = await readStoreFromDisk()
+      if (records === null) {
+        // 文件被删掉或不是本服务格式：保留内存视图，记下指纹，等它回来再对账
+        diskSignature = signature
+        return
+      }
+      // 读完再看一眼 stat：读的瞬间正被替换的话指纹会变，这份内容可能已经过期
+      const after = await statSignature()
+      if (after !== signature) {
+        signature = after
+        if (attempt < RELOAD_ATTEMPTS) {
+          await sleep(RELOAD_RETRY_MS)
+          continue
+        }
+      }
+      const applied = adoptRecords(records)
+      const before = diskSignature
+      diskSignature = after
+      console.log(
+        '[sync] 数据文件被外部更新（%s → %s）：读回 %d 条，新增 %d、更新 %d、墓碑化 %d（%s）',
+        String(before),
+        String(after),
+        records.size,
+        applied.added,
+        applied.updated,
+        applied.collapsed,
+        where
+      )
+      if (applied.added > 0 || applied.updated > 0 || applied.collapsed > 0) markDirty()
+      return
+    } catch (error) {
+      console.warn(
+        '[sync] 重读数据文件失败（第 %d/%d 次，%s）：%s',
+        attempt,
+        RELOAD_ATTEMPTS,
+        where,
+        error.message
+      )
+      if (attempt === RELOAD_ATTEMPTS) {
+        console.warn('[sync] 放弃本次重读，先按内存视图应答（下次请求再试）')
+        return
+      }
+      await sleep(RELOAD_RETRY_MS)
+    }
+  }
+}
+
+/**
+ * 启动时把数据文件读进内存，并记下版本指纹。
+ *
+ * @returns Promise<void>
+ * @sideeffect 覆盖 store / diskSignature；读不到时按空库启动（不退出）
+ */
+async function load() {
+  let signature = null
+  try {
+    signature = await statSignature()
+  } catch {
+    signature = null
+  }
+  const records = await readStoreFromDisk().catch((error) => {
+    console.warn('[sync] 读不到存档（%s），按空库启动：%s', error.message, DATA)
+    return null
+  })
+  if (records === null) {
+    if (signature === '') {
+      console.log('[sync] 新建数据文件：%s', DATA)
+    } else {
+      console.warn('[sync] 数据文件不是本服务的格式，按空库启动：%s', DATA)
+    }
+  } else {
+    store = records
+    console.log('[sync] 已载入 %d 条记录：%s', store.size, DATA)
+  }
+  diskSignature = signature
 }
 
 /** 全量记录（按 key 排序，客户端与日志都好读） */
@@ -623,6 +835,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/health' && req.method === 'GET') {
+    // 处理前先对账：手机 P2P 推给 lan-peer 的记录写在文件里，不重读就一直是旧数字
+    await reconcileWithDisk('GET /api/health')
     // 只回协议身份、时间、是否设了口令与计数：主机名、数据文件绝对路径等一律不对外
     // （审计 SHOULD-4）。format 必须保留：客户端的 checkFormat 靠它认出「这是同步服务」。
     send(req, res, 200, {
@@ -638,6 +852,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/state' && req.method === 'GET') {
+    await reconcileWithDisk('GET /api/state')
     send(req, res, 200, {
       ok: true,
       format: SYNC_FORMAT,
@@ -650,6 +865,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/sync' && req.method === 'POST') {
+    // 合并前先并进外部改动，否则客户端推上来的记录会盖掉文件里刚到的 P2P 数据
+    await reconcileWithDisk('POST /api/sync')
     let payload
     try {
       payload = JSON.parse(await readBody(req))

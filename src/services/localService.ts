@@ -19,6 +19,17 @@ const SERVICE_ID = 'deepseek-chat-local'
 /** 只在这些 host 上探测；APK 的页面源是 dsapp.local，file:// 下压根没有 host */
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
 
+/**
+ * host 是不是回环地址（本机服务只可能在这些 host 上）。
+ *
+ * 同步那边（services/sync/api.ts）用同一个判断决定「能不能走同源反代」，
+ * 所以这里导出而不是各写一份集合 —— 两处漏一个 host 就会出现「探测到了却不走代理」。
+ *
+ * @param hostname location.hostname 或 URL.hostname 的值
+ * @returns 是回环地址为 true
+ */
+export const isLoopbackHostname = (hostname: string): boolean => LOOPBACK_HOSTS.has(hostname)
+
 /** 本机服务的状态：是否由它托管本页、它有没有配置 key、产物里有没有烘进 key */
 export type LocalServiceState = {
   /** 页面由本机服务供给：API 用相对路径走同源代理，浏览器不携带鉴权头 */
@@ -54,7 +65,7 @@ const probe = async (): Promise<boolean> => {
   if (typeof location === 'undefined' || !/^https?:$/.test(location.protocol)) {
     return false
   }
-  if (!LOOPBACK_HOSTS.has(location.hostname)) {
+  if (!isLoopbackHostname(location.hostname)) {
     return false
   }
   try {

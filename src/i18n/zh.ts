@@ -200,6 +200,8 @@ export const zh = {
   syncServerPlaceholder: 'http://127.0.0.1:7788',
   syncServerDescription:
     '填跑着 sync-server 的那台机器的地址；局域网内其它设备同步时，填那台机器的 IP 和端口。',
+  syncServerSameOrigin:
+    '留空即走本页同源反代：{url}（本机服务转发到 127.0.0.1:7788，手机同步来的数据就在那儿）。填了地址则按填的连。',
   syncTest: '测试连接',
   syncTesting: '正在测试...',
   syncTestOk: '连接成功：{name}，服务端有 {sessions} 个会话、{messages} 条消息、{prompts} 条提示词',
@@ -225,6 +227,7 @@ export const zh = {
   syncErrorUrl: '服务地址无效，请填写完整地址（例如 http://127.0.0.1:7788）',
   syncErrorNetwork: '连不上同步服务，请确认地址与端口，以及服务是否已启动',
   syncErrorNotFound: '该地址不是本项目的同步服务（端口或路径不对）',
+  syncErrorNotRunning: '同步服务未启动：本机的 sync-server（127.0.0.1:7788）没在运行，先启动它再同步',
   syncErrorServer: '同步服务内部错误：{message}',
   syncErrorResponse: '同步服务返回的数据无法识别',
   syncErrorVersion: '同步服务的协议版本比本页更新，请升级后再同步',
