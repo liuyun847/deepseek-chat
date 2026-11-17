@@ -24,14 +24,17 @@ const Row = ({
   description,
   status,
   action,
+  className,
 }: {
   label: string
   htmlFor?: string
   description?: string
   status?: { text: string; error?: boolean } | null
   action: ReactNode
+  /** 该行专有的排版补充（例如窄屏换行），拼在通用 cell + row 之后 */
+  className?: string
 }) => (
-  <div className={clsx(settingsStyles.cell, settingsStyles.row)}>
+  <div className={clsx(settingsStyles.cell, settingsStyles.row, className)}>
     <div className={settingsStyles.text}>
       <div className={settingsStyles.label}>
         {htmlFor ? <label htmlFor={htmlFor}>{label}</label> : label}
@@ -198,6 +201,7 @@ export const LanSettings = () => {
       <Row
         label={t('lanPassphrase')}
         htmlFor={passId}
+        className={settingsStyles.passphraseCell}
         description={t('lanPassphraseDescription')}
         status={
           hasKey ? { text: t('lanPairedHint', { tag: pairTag }) } : { text: t('lanNoPassphrase'), error: true }

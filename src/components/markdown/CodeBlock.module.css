@@ -19,14 +19,14 @@
   margin-left: 8px;
   color: var(--dsw-alias-label-primary);
   font-family: var(--ds-font-family-code);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
 }
 
 .note {
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
 }
 
 .button {
@@ -40,8 +40,8 @@
   background: transparent;
   color: var(--dsw-alias-label-secondary);
   font: inherit;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
   cursor: pointer;
   user-select: none;
 

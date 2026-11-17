@@ -22,8 +22,8 @@
 .label {
   flex-shrink: 0;
   color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
   white-space: nowrap;
   user-select: none;
 }

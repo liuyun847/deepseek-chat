@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { useSettings, type ThemePreference } from '../services/settings.js'
+import { useSettings, type FontScale, type ThemePreference } from '../services/settings.js'
 
 export type Theme = 'light' | 'dark'
 
@@ -60,7 +60,43 @@ const syncTheme = () => {
   }
 }
 
-/** 首屏渲染前同步应用一次，之后随主题设置与系统深浅色变化更新 */
+/**
+ * 应用字号档位：只写 body 的一个属性，具体像素值全由 theme.css 里的
+ * `body[data-font-scale]` 覆盖 --ds-fs-* / --ds-lh-* 完成（CSS 里没有 normal 分支，
+ * 因为 normal 就是基础值，所以这里直接移除属性）。
+ *
+ * @param fontScale 字号档位
+ * @sideeffect 增删 document.body 的 data-font-scale
+ */
+export const applyFontScale = (fontScale: FontScale) => {
+  const body = document.body
+  if (fontScale === 'normal') {
+    body.removeAttribute('data-font-scale')
+  } else {
+    body.setAttribute('data-font-scale', fontScale)
+  }
+}
+
+let appliedFontScale: FontScale | null = null
+
+const syncFontScale = () => {
+  const { fontScale } = useSettings.getState()
+  if (fontScale !== appliedFontScale) {
+    appliedFontScale = fontScale
+    applyFontScale(fontScale)
+  }
+}
+
+/**
+ * 首屏渲染前同步应用一次字号，之后随设置变化即时更新
+ * （刷新后由首屏这次调用恢复；多端同步落地走 reloadSettingsFromStorage → 订阅同样会触发）。
+ */
+export const setupFontScale = () => {
+  syncFontScale()
+  useSettings.subscribe(syncFontScale)
+}
+
+/** 首屏渲染前同步应用一次，之后随主题设置与系统深浅色变化更新（字号见 setupFontScale） */
 export const setupTheme = () => {
   syncTheme()
   if (document.readyState !== 'complete') {
@@ -68,4 +104,6 @@ export const setupTheme = () => {
   }
   query.addEventListener('change', syncTheme)
   useSettings.subscribe(syncTheme)
+  // 字号与深浅色是两件独立的事，但都只在首屏设置一次，因此共用这一个入口（见 main.tsx）
+  setupFontScale()
 }

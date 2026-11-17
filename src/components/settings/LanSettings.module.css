@@ -30,8 +30,8 @@
   background-color: transparent;
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   outline: none;
   transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out);
 
@@ -54,8 +54,8 @@
 }
 
 .sectionTitle {
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   font-weight: 500;
   color: var(--dsw-alias-label-primary);
 }
@@ -65,8 +65,8 @@
   display: grid;
   grid-template-columns: minmax(88px, max-content) 1fr;
   gap: 4px 12px;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
   color: var(--dsw-alias-label-caption);
 }
 
@@ -102,14 +102,14 @@
 }
 
 .peerName {
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   color: var(--dsw-alias-label-primary);
 }
 
 .peerMeta {
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
   color: var(--dsw-alias-label-caption);
   font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   word-break: break-all;
@@ -119,8 +119,8 @@
 .badge {
   padding: 1px 8px;
   border-radius: 10px;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
   border: 1px solid var(--dsw-alias-border-l2);
   color: var(--dsw-alias-label-caption);
   white-space: nowrap;
@@ -132,8 +132,8 @@
 }
 
 .empty {
-  font-size: 13px;
-  line-height: 20px;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
   color: var(--dsw-alias-label-caption);
 }
 

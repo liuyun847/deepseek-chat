@@ -12,7 +12,37 @@ body {
   --ds-control-height-s: 32px;
   --ds-control-height-xs: 28px;
 
-  --ds-font-size-m: 14px;
+  /* ---------- 字号体系 ----------
+     改这里会影响全局字号：组件一律引用下面的变量，不要再写死 px。
+     档位名里的数字 = normal（100%）档的实际像素值。
+     整体缩放见下方 body[data-font-scale]：small 90% / large 110%。
+     新增档位时，三处（基础值、small、large）都要同步补。 */
+  --ds-fs-11: 11px;
+  --ds-fs-12: 12px;
+  --ds-fs-13: 13px;
+  --ds-fs-14: 14px;
+  --ds-fs-15: 15px;
+  --ds-fs-16: 16px;
+  --ds-fs-17: 17px;
+  --ds-fs-20: 20px;
+  --ds-fs-22: 22px;
+  --ds-fs-24: 24px;
+
+  /* 行高档位：和字号成对使用（如 14px 字号 + 22px 行高），缩放时同比例变化 */
+  --ds-lh-14: 14px;
+  --ds-lh-16: 16px;
+  --ds-lh-18: 18px;
+  --ds-lh-20: 20px;
+  --ds-lh-22: 22px;
+  --ds-lh-24: 24px;
+  --ds-lh-25: 25px;
+  --ds-lh-28: 28px;
+  --ds-lh-30: 30px;
+  --ds-lh-32: 32px;
+  --ds-lh-34: 34px;
+
+  /* 全局基准字号（body 默认字号），保留旧名，指向 14px 档 */
+  --ds-font-size-m: var(--ds-fs-14);
 
   --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
 
@@ -23,6 +53,63 @@ body {
 
   --ds-transition-duration: 0.2s;
   --ds-transition-duration-slow: 0.3s;
+}
+
+/* 字号缩放三档（small 90% / normal 100% / large 110%）：靠覆盖上面的变量整体缩放。
+   为什么不用 zoom / transform: scale：项目按 dvh 算高度、弹窗用 position: fixed，
+   整体缩放会让尺寸与坐标换算失真。normal 即上面的基础值（不写属性也是它）。 */
+body[data-font-scale='small'] {
+  /* 字号：全部档位按 90% 等比覆盖 */
+  --ds-fs-11: 9.9px;
+  --ds-fs-12: 10.8px;
+  --ds-fs-13: 11.7px;
+  --ds-fs-14: 12.6px;
+  --ds-fs-15: 13.5px;
+  --ds-fs-16: 14.4px;
+  --ds-fs-17: 15.3px;
+  --ds-fs-20: 18px;
+  --ds-fs-22: 19.8px;
+  --ds-fs-24: 21.6px;
+
+  /* 行高：同比例覆盖，避免大字号挤在窄行高里 */
+  --ds-lh-14: 12.6px;
+  --ds-lh-16: 14.4px;
+  --ds-lh-18: 16.2px;
+  --ds-lh-20: 18px;
+  --ds-lh-22: 19.8px;
+  --ds-lh-24: 21.6px;
+  --ds-lh-25: 22.5px;
+  --ds-lh-28: 25.2px;
+  --ds-lh-30: 27px;
+  --ds-lh-32: 28.8px;
+  --ds-lh-34: 30.6px;
+}
+
+body[data-font-scale='large'] {
+  /* 字号：全部档位按 110% 等比覆盖 */
+  --ds-fs-11: 12.1px;
+  --ds-fs-12: 13.2px;
+  --ds-fs-13: 14.3px;
+  --ds-fs-14: 15.4px;
+  --ds-fs-15: 16.5px;
+  --ds-fs-16: 17.6px;
+  --ds-fs-17: 18.7px;
+  --ds-fs-20: 22px;
+  --ds-fs-22: 24.2px;
+  --ds-fs-24: 26.4px;
+
+  /* 行高：同比例覆盖，避免大字号挤在窄行高里 */
+  --ds-lh-14: 15.4px;
+  --ds-lh-16: 17.6px;
+  --ds-lh-18: 19.8px;
+  --ds-lh-20: 22px;
+  --ds-lh-22: 24.2px;
+  --ds-lh-24: 26.4px;
+  --ds-lh-25: 27.5px;
+  --ds-lh-28: 30.8px;
+  --ds-lh-30: 33px;
+  --ds-lh-32: 35.2px;
+  --ds-lh-34: 37.4px;
 }
 
 body {
@@ -223,31 +310,31 @@ body {
 }
 
 body {
-  --dsw-font-markdown-h1: 700 24px/34px var(--dsw-font-family);
+  --dsw-font-markdown-h1: 700 var(--ds-fs-24)/var(--ds-lh-34) var(--dsw-font-family);
 
-  --dsw-font-markdown-h2: 700 22px/32px var(--dsw-font-family);
+  --dsw-font-markdown-h2: 700 var(--ds-fs-22)/var(--ds-lh-32) var(--dsw-font-family);
 
-  --dsw-font-markdown-h3: 700 20px/30px var(--dsw-font-family);
+  --dsw-font-markdown-h3: 700 var(--ds-fs-20)/var(--ds-lh-30) var(--dsw-font-family);
 
-  --dsw-font-markdown-h4: 600 16px/28px var(--dsw-font-family);
+  --dsw-font-markdown-h4: 600 var(--ds-fs-16)/var(--ds-lh-28) var(--dsw-font-family);
 
-  --dsw-font-markdown-base: 16px/28px var(--dsw-font-family);
+  --dsw-font-markdown-base: var(--ds-fs-16)/var(--ds-lh-28) var(--dsw-font-family);
 
-  --dsw-font-markdown-base-strong: 600 16px/28px var(--dsw-font-family);
+  --dsw-font-markdown-base-strong: 600 var(--ds-fs-16)/var(--ds-lh-28) var(--dsw-font-family);
 
-  --dsw-font-markdown-table: 15px/25px var(--dsw-font-family);
+  --dsw-font-markdown-table: var(--ds-fs-15)/var(--ds-lh-25) var(--dsw-font-family);
 
-  --dsw-font-markdown-table-head: 500 15px/25px var(--dsw-font-family);
+  --dsw-font-markdown-table-head: 500 var(--ds-fs-15)/var(--ds-lh-25) var(--dsw-font-family);
 
-  --dsw-font-markdown-small: 14px/24px var(--dsw-font-family);
+  --dsw-font-markdown-small: var(--ds-fs-14)/var(--ds-lh-24) var(--dsw-font-family);
 
-  --dsw-font-markdown-small-strong: 600 14px/24px var(--dsw-font-family);
+  --dsw-font-markdown-small-strong: 600 var(--ds-fs-14)/var(--ds-lh-24) var(--dsw-font-family);
 
-  --dsw-font-markdown-code: 14px/22px var(--ds-font-family-code);
+  --dsw-font-markdown-code: var(--ds-fs-14)/var(--ds-lh-22) var(--ds-font-family-code);
 
-  --dsw-font-markdown-code-block: 13px/22px var(--ds-font-family-code);
+  --dsw-font-markdown-code-block: var(--ds-fs-13)/var(--ds-lh-22) var(--ds-font-family-code);
 
-  --dsw-font-s-strong-14: 500 14px/22px var(--dsw-font-family);
+  --dsw-font-s-strong-14: 500 var(--ds-fs-14)/var(--ds-lh-22) var(--dsw-font-family);
 
-  --dsw-font-xs-13: 13px/20px var(--dsw-font-family);
+  --dsw-font-xs-13: var(--ds-fs-13)/var(--ds-lh-20) var(--dsw-font-family);
 }

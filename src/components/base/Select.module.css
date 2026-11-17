@@ -13,8 +13,8 @@
   background: var(--dsw-specific-selector);
   color: var(--dsw-alias-label-primary);
   font: inherit;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   white-space: nowrap;
   cursor: pointer;
   outline: none;
@@ -47,8 +47,8 @@
   height: 32px;
   padding: 0 26px 0 10px;
   border-radius: 16px;
-  font-size: 13px;
-  line-height: 18px;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-18);
 
   & .arrow {
     right: 10px;
@@ -100,8 +100,8 @@
   min-height: 40px;
   padding: 4px 10px;
   border-radius: 10px;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   color: var(--dsw-alias-label-primary);
   white-space: normal;
   cursor: pointer;

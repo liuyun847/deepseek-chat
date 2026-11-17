@@ -80,8 +80,8 @@
 
 .caption {
   overflow: hidden;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   font-weight: 400;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -90,8 +90,8 @@
 
 .subCaption {
   overflow: hidden;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
   white-space: nowrap;
   text-overflow: ellipsis;
   color: var(--dsw-alias-label-tertiary);

@@ -30,13 +30,13 @@
 
 .title {
   margin-top: 16px;
-  font-size: 20px;
-  line-height: 28px;
+  font-size: var(--ds-fs-20);
+  line-height: var(--ds-lh-28);
 }
 
 .desc {
   margin-top: 16px;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
   color: var(--dsw-alias-label-tertiary);
 }

@@ -52,8 +52,8 @@
 .caveat {
   width: 100%;
   padding: 6px 0;
-  font-size: 11px;
-  line-height: 16px;
+  font-size: var(--ds-fs-11);
+  line-height: var(--ds-lh-16);
   text-align: center;
   color: var(--dsw-alias-label-tertiary);
   user-select: none;

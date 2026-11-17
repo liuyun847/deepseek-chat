@@ -23,8 +23,10 @@ import { useChatStore } from '../../services/chat/store.js'
 import { regionCodes, getRegionName, provinces } from '../../services/location.js'
 import { loadModels, useModelChoices } from '../../services/models.js'
 import {
+  FONT_SCALE_OPTIONS,
   isChineseBrowser,
   REASONING_EFFORT_OPTIONS,
+  setFontScale,
   setLocale,
   setLocation,
   setModel,
@@ -46,7 +48,7 @@ import { SystemPromptSettings } from './SystemPromptSettings.js'
 import styles from './Settings.module.css'
 
 /**
- * 设置弹窗：分「通用设置」（主题、语言、位置、模型、推理强度）、「系统提示词」（提示词库）、
+ * 设置弹窗：分「通用设置」（主题、字体大小、语言、位置、模型、推理强度）、「系统提示词」（提示词库）、
  * 「多端同步」（服务地址、设备名、测试连接、同步）与「数据管理」（API Key、导入、导出、删除）。
  * 桌面端为居中弹窗、左侧导航；移动端为底部弹层、导航横排在内容上方
  */
@@ -122,6 +124,7 @@ const SettingsContent = () => {
           {section === 'general' ? (
             <>
               <ThemeSetting />
+              <FontScaleSetting />
               <LocaleSetting />
               <LocationSetting />
               <ModelSetting />
@@ -480,6 +483,35 @@ const ThemeSetting = () => {
         ))}
       </div>
     </div>
+  )
+}
+
+/**
+ * 字体大小：三档只改界面字号（写 body 的 data-font-scale，见 app/theme.ts），
+ * 不参与请求，改完立刻生效，刷新与多端同步落地后仍然生效。
+ * 选择器复用推理强度那一行的类名（同一列里的定宽胶囊按钮），避免为它新增样式。
+ */
+const FontScaleSetting = () => {
+  const t = useTranslate()
+  const fontScale = useSettings((state) => state.fontScale)
+  const label = t('settingsFontScale')
+  return (
+    <SettingCell
+      label={label}
+      status={null}
+      action={
+        <Select
+          ariaLabel={label}
+          className={styles.effortSelect}
+          value={fontScale}
+          options={FONT_SCALE_OPTIONS.map((option) => ({
+            value: option.value,
+            label: t(option.label),
+          }))}
+          onChange={setFontScale}
+        />
+      }
+    />
   )
 }
 
