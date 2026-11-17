@@ -1,8 +1,8 @@
 import { create } from 'zustand'
 import { useSettings } from '../../services/settings.js'
 
-/** 设置弹窗的分组：通用设置 / 系统提示词 / 多端同步 / 数据管理 */
-export type SettingsSection = 'general' | 'prompts' | 'sync' | 'data'
+/** 设置弹窗的分组：通用设置 / 系统提示词 / 多端同步 / 手机直连 / 数据管理 */
+export type SettingsSection = 'general' | 'prompts' | 'sync' | 'lan' | 'data'
 
 /** 设置弹窗：侧边栏底部、没有 API Key 时的操作与 401 提示都可以打开；section 为打开时选中的分组 */
 export const useSettingsDialog = create(() => ({

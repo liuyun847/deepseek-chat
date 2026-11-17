@@ -18,6 +18,14 @@
     -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      局域网直连要用 WifiManager.createMulticastLock()：Android 的 Wi-Fi 驱动默认过滤
+      发往广播/组播的包，不加这把锁就永远收不到对端广播（但能发出去 —— 症状是「别人看得见我、
+      我看不见别人」）。这是 normal 级权限，安装即授予，用户看不到权限提示。
+      INTERNET 已经覆盖普通 socket；这里只补组播锁这一项，别的都不要。
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
     <!--

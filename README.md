@@ -57,6 +57,35 @@ It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-d
 
 Sync is record-granular (chat, message) last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
 
+## Phone-to-phone (LAN P2P, no server)
+
+Settings → Phone-to-phone: put two phones on the same Wi-Fi and type the **same passphrase** (at least 8 characters) on both. From then on they discover each other and sync automatically — no server, no IP addresses to fill in.
+
+- Discovery: the native layer in the APK (`LanLink.java`) broadcasts over UDP (port 47823) every few seconds — device id, name, TCP port, passphrase fingerprint — and listens for the same from others. Since Android 9, receiving broadcasts requires holding a `WifiManager.MulticastLock` (permission `CHANGE_WIFI_MULTICAST_STATE`); the lock is held while the page is visible and released the moment the app goes to the background, which also stops broadcasting.
+- Transport: each device binds its `ServerSocket` to a random port and does one request/response per TCP connection, framed as a 4-byte big-endian length followed by the body. The body is an encrypted envelope whose only plaintext is device id, request id, timestamp and a random iv.
+- Encryption: the passphrase is stretched with PBKDF2-HMAC-SHA256 (120k rounds, fixed salt) into a 256-bit key; messages are gzipped and sealed with AES-GCM, with the envelope's from/id/ts bound in as AAD. The passphrase itself is never stored — only the derived key. The broadcast "fingerprint" is the first 6 bytes of SHA-256(key): matching fingerprints mean paired. A device with a different passphrase cannot decrypt and therefore never syncs.
+- Merge: the same LWW and tombstone rules as the HTTP channel (`src/services/sync/merge.ts`); only the "authoritative full state" is replaced by "whatever the peer is missing". If both sides share the same data stamp (`stampOf`), no records are sent at all — just one hello.
+- Scheduling: the device with the lexicographically smaller `deviceId` initiates; the other sends a ping when it has something to pull. Local edits trigger a debounced (4 s) push, plus a 45 s version check. Attachments sync file details only, exactly like the HTTP channel.
+
+Layering (the transport never sees plaintext):
+
+```text
+LanLink.java            UDP discovery + TCP framing (bytes only, no app data)
+  ↕ addJavascriptInterface
+shell.js  window.__dsLan   callback queue + Promise plumbing (bulk data is pulled back by the page)
+  ↕
+lan/bridge.ts          typed wrapper around the native bridge
+lan/crypto.ts          PBKDF2 / AES-GCM / fingerprint / gzip, base64
+lan/protocol.ts        envelope and message shapes, time window, data stamp
+lan/transfer.ts        peer-to-peer diff merge (reuses merge.ts decisions)
+lan/exchange.ts        IndexedDB glue (load all, apply, rewrite snapshots)
+lan/engine.ts          orchestration: peer table, auto sync, throttling, self test
+```
+
+With only one phone, Settings → Phone-to-phone → "Self test" sends a ping and a hello to its own TCP port: native accept → page decrypt → encrypted reply, reporting the RTT and whether both data stamps agree. A two-process protocol simulation and a "host process acts as the second phone" interop script live in [tools/lan-sim/README.md](tools/lan-sim/README.md).
+
+Limits (stated up front): this only works inside one subnet — guest Wi-Fi and AP isolation block broadcasts. For cross-subnet or relayed setups keep using the HTTP sync above.
+
 ## Android APK
 
 The repo can also be packaged as an installable APK: the same `dist/` output is embedded in the APK's assets and served to a WebView from a virtual `https://dsapp.local` origin (a real secure origin, so localStorage and IndexedDB work). No Gradle, no Maven — the chain is aapt2 → javac → d8 → jar → zipalign → apksigner, driven by `tools/build-apk.ps1` (Windows, PowerShell 7).
@@ -65,15 +94,15 @@ The repo can also be packaged as an installable APK: the same `dist/` output is 
 .\tools\setup-toolchain.ps1                     # one-off: JDK 17 + build-tools 35.0.1 + android-35 into %USERPROFILE%\.devtools
 pnpm --config.shell-emulator=true build       # frontend -> dist/
 .\tools\build-apk.ps1                          # -> dist-apk\deepseek-chat.apk
-.\tools\verify-apk.ps1                         # 33 assertions on the artifact
+.\tools\verify-apk.ps1                         # 34 assertions on the artifact
 adb install -r dist-apk\deepseek-chat.apk
 ```
 
 - The API key can be **baked in at build time** from a local secret file: put the key in `.secrets/api-key.txt` (single line, git-ignored) and the next `pnpm build` injects it into the main bundle — the APK and the static site then work right after installing/opening, with no setup. Without that file the build falls back to the original flow: enter the key in Settings, where it is stored in localStorage of the app origin. A key entered in Settings always wins over the built-in one, and `tools\verify-apk.ps1` checks the packaged key against the secret file (fingerprint only, never the key itself).
 - Package name stays `ds.app` and the signing key is `android\debug.keystore` (git-ignored), so a new APK can be installed **over** an existing install. Lose that keystore and you must uninstall first, which wipes local chats.
-- `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.2.0 → 200). Bump `package.json` before shipping.
-- `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), only the `INTERNET` permission.
-- `android/` holds the shell: `MainActivity.java` (assets serving, external links, file picker, SAF export, back key), `shell.js` (page-side patch: back key, blob downloads, and runtime polyfills for old WebViews; `serveAsset` inserts it as a classic `<script>` at the top of the entry HTML's `<head>`, so it runs before the deferred main bundle), `res/`, `AndroidManifest.xml`. Nothing in `src/` or `rspack.config.ts` is Android-specific: the shell works because the build uses `publicPath: 'auto'`.
+- `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.3.0 → 300). Bump `package.json` before shipping.
+- `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), only two permissions: `INTERNET` and `CHANGE_WIFI_MULTICAST_STATE` (the multicast lock used by phone-to-phone discovery; normal level, granted at install).
+- `android/` holds the shell: `MainActivity.java` (assets serving, external links, file picker, SAF export, back key), `LanLink.java` (LAN discovery over UDP broadcast + TCP request/response), `shell.js` (page-side patch: back key, blob downloads, and runtime polyfills for old WebViews; `serveAsset` inserts it as a classic `<script>` at the top of the entry HTML's `<head>`, so it runs before the deferred main bundle), `res/`, `AndroidManifest.xml`. Nothing in `src/` or `rspack.config.ts` is Android-specific: the shell works because the build uses `publicPath: 'auto'`.
 - Old WebViews (measured on WebView 91) cannot parse syntax Mermaid's bundle needs (it ships `class` static blocks), so importing that chunk throws a SyntaxError. `src/services/markdown/mermaid.ts` therefore probes capabilities first: when unsupported the diagram falls back to a plain code block labelled "Diagrams are not supported in this environment" and the mermaid chunk is never requested; when supported nothing changes (still lazy-loaded).
 
 ## Development
@@ -99,6 +128,7 @@ src/
     api/               API requests, SSE, and protocol types
     chat/              Conversations, message branches, storage, and history import/export
     markdown/          Markdown parsing, syntax highlighting, and diagrams
+    sync/              Multi-device sync (HTTP channel + phone-to-phone LAN P2P)
   utils/               Shared utilities
 ```
 

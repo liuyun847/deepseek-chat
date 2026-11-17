@@ -10,7 +10,7 @@
  * 构建时由 tools/build-apk.ps1 从 android/shell/ 拷进 APK 的 assets/shell.js ——
  * 它不参与前端构建，dist/index.html 里也没有它（网页形态下没有这个文件，只有壳里才有）。
  *
- * 三件事，前两件都是 WebView 缺浏览器那一层能力、页面里补不了：
+ * 四件事，前三件都是 WebView 缺浏览器那一层能力、页面里补不了：
  *
  *   1. 返回键：前端是单页应用、没有 history 路由，系统返回键无从判断"该关哪个界面"。
  *      这里给原生一个 window.__dsBack()，从离用户最近的一层往外回退，返回 true 表示这次
@@ -36,7 +36,11 @@
  *      现代 WebView 上一行都不执行。源码侧也同步改成 slice/sort 写法（见 store.ts、
  *      toLocal.ts），这一层只是给已经装了旧包、或者以后新代码再踩坑留的兜底。
  *
- *   3. 导出下载：设置里「导出全部对话」是 {URL.createObjectURL → <a download> → click()}。
+ *   3. 局域网直连的桥接层：原生 LanLink 的回调只推「有东西了」（一个 requestId），大块密文
+ *      由页面反过来同步取（window.__dsLan.take/send），并把「页面还没注册处理器时请求先到了」
+ *      这段竞态用队列接住 —— 见下面「局域网直连（手机↔手机）的桥接层」一节。
+ *
+ *   4. 导出下载：设置里「导出全部对话」是 {URL.createObjectURL → <a download> → click()}。
  *      这个流程在浏览器里由下载管理器接管，WebView 没有下载管理器，点了什么都不会发生
  *      （DownloadListener 也拿不到 blob: 的内容 —— 它只活在渲染进程里）。
  *      所以这里在捕获阶段拦下带 download 属性的 blob: 链接，自己 fetch 出内容，
@@ -102,6 +106,99 @@
         return Array.prototype.slice.call(this).sort(compare)
       },
     })
+  }
+
+  // ── 局域网直连（手机↔手机）的桥接层 ─────────────────────────────────────
+  //
+  // 原生 LanLink 的三条回调都只推「有东西了」（一个 requestId），数据由这里反过来同步取：
+  // 一次同步的密文 base64 可能有几 MB，拼进脚本文本字面量会让 WebView 去解析超长字符串。
+  //
+  // 这一层还负责两件页面脚本补不了的事：
+  //   1. 请求排队：原生可能在主包注册处理器之前就收到别人的同步请求（页面刚启动那几秒），
+  //      直接丢会白白失败一次，这里先存着，listen() 时补发。
+  //   2. 请求/响应配对：native 的 lanSend 是异步的，这里用 id → Promise 把它变成 await。
+
+  var lanHandlers = null
+  var lanQueue = []
+  var lanSends = {}
+  var lanAvailable = !!(
+    window.__DS_BRIDGE__ &&
+    typeof window.__DS_BRIDGE__.lanStart === 'function' &&
+    typeof window.__DS_BRIDGE__.lanTake === 'function'
+  )
+
+  /** 取走一条收件箱数据，解不开就当作没有 */
+  var lanTake = function (id) {
+    if (!lanAvailable) return null
+    var raw = window.__DS_BRIDGE__.lanTake(id)
+    if (!raw) return null
+    try {
+      return JSON.parse(raw)
+    } catch (e) {
+      return null
+    }
+  }
+
+  window.__dsLan = {
+    available: lanAvailable,
+
+    /**
+     * 注册页面侧处理器；积压的请求在这里补发。
+     * @param {{onPeers?: Function, onRequest?: Function}} handlers
+     */
+    listen: function (handlers) {
+      lanHandlers = handlers || {}
+      var pending = lanQueue
+      lanQueue = []
+      for (var i = 0; i < pending.length; i += 1) {
+        if (lanHandlers.onRequest) lanHandlers.onRequest(pending[i])
+      }
+    },
+
+    /** 原生：在线设备表变了 */
+    onPeers: function () {
+      if (lanHandlers && lanHandlers.onPeers) lanHandlers.onPeers()
+    },
+
+    /** 原生：收到一个请求 */
+    onRequest: function (id) {
+      if (lanHandlers && lanHandlers.onRequest) lanHandlers.onRequest(id)
+      else lanQueue.push(id)
+    },
+
+    /** 原生：主动请求有结果了（成功或失败都在这里收口） */
+    onResponse: function (id) {
+      var slot = lanSends[id]
+      if (!slot) return
+      delete lanSends[id]
+      if (slot.timer) window.clearTimeout(slot.timer)
+      var taken = lanTake(id)
+      if (!taken) slot.reject(new Error('bridge-take-missing'))
+      else if (taken.ok) slot.resolve(String(taken.payload || ''))
+      else slot.reject(new Error(String(taken.error || 'bridge-error')))
+    },
+
+    /**
+     * 发一个请求并等回复（Promise 形态，页面里直接 await）。
+     * @returns {Promise<string>} 回复的信封 JSON
+     */
+    send: function (id, host, port, payload, timeoutMs) {
+      if (!lanAvailable) return Promise.reject(new Error('lan-bridge-missing'))
+      return new Promise(function (resolve, reject) {
+        var timer = window.setTimeout(function () {
+          delete lanSends[id]
+          reject(new Error('timeout'))
+        }, timeoutMs || 35000)
+        lanSends[id] = { resolve: resolve, reject: reject, timer: timer }
+        try {
+          window.__DS_BRIDGE__.lanSend(id, host, port, payload)
+        } catch (e) {
+          delete lanSends[id]
+          window.clearTimeout(timer)
+          reject(e)
+        }
+      })
+    },
   }
 
   // ── 返回键 ────────────────────────────────────────────────────────────────

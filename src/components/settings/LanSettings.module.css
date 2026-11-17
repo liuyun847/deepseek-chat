@@ -1,0 +1,151 @@
+/**
+ * 手机直连页：与 Settings.module.css 的通用行样式配合，
+ * 这里补「设备列表 / 指纹 / 状态徽标」这几块直连专有的排版。
+ */
+.lan {
+  display: flex;
+  flex-direction: column;
+}
+
+/** 口令输入 + 按钮 */
+.field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.input {
+  box-sizing: border-box;
+  flex: 1 1 180px;
+  min-width: 0;
+  max-width: 280px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 16px;
+  background-color: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  outline: none;
+  transition: border-color var(--ds-transition-duration) var(--ds-ease-in-out);
+
+  &:focus {
+    border-color: var(--dsw-alias-brand-primary);
+  }
+
+  &::placeholder {
+    color: var(--dsw-alias-label-caption);
+  }
+}
+
+/** 本机信息 / 在线设备两个块 */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.sectionTitle {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary);
+}
+
+/** 键值行：左边固定宽度标签，右边等宽字体值 */
+.info {
+  display: grid;
+  grid-template-columns: minmax(88px, max-content) 1fr;
+  gap: 4px 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-caption);
+}
+
+.infoValue {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  word-break: break-all;
+}
+
+/** 设备列表 */
+.peers {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.peer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+}
+
+.peerMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.peerName {
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--dsw-alias-label-primary);
+}
+
+.peerMeta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-caption);
+  font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  word-break: break-all;
+}
+
+/** 状态徽标 */
+.badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 18px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-caption);
+  white-space: nowrap;
+}
+
+.badgeOk {
+  border-color: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-brand-primary);
+}
+
+.empty {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-caption);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

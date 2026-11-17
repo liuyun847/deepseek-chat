@@ -25,6 +25,8 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -113,6 +115,12 @@ public class MainActivity extends Activity {
     private boolean debugMode = DEBUG_DEFAULT;
 
     private WebView web;
+
+    /**
+     * 局域网直连的传输层（UDP 广播发现 + TCP 请求/响应）。
+     * 页面未调用 lanStart 之前它不占任何端口；所有密钥与明文都不经过这一层。
+     */
+    private LanLink lan;
 
     /** 待落盘的内容（用户还在系统文件选择器里挑位置时暂存）。 */
     private volatile byte[] pendingBytes = null;
@@ -266,6 +274,32 @@ public class MainActivity extends Activity {
                     }
                 });
                 return true;
+            }
+        });
+
+        // 局域网直连：这一层只搬字节，不认识聊天数据（加解密与合并在页面里）。
+        // 三条回调都只推「有东西了」，数据由页面反过来同步取（见 LanLink.take 的注释）。
+        lan = new LanLink(this, new LanLink.Listener() {
+            @Override
+            public void onLog(String message) {
+                bridgeLog("[lan] " + message);
+            }
+
+            @Override
+            public void onPeers() {
+                evalJs("window.__dsLan&&window.__dsLan.onPeers&&window.__dsLan.onPeers()");
+            }
+
+            @Override
+            public void onRequest(String requestId) {
+                evalJs("window.__dsLan&&window.__dsLan.onRequest&&window.__dsLan.onRequest("
+                        + JSONObject.quote(requestId) + ")");
+            }
+
+            @Override
+            public void onResponse(String requestId) {
+                evalJs("window.__dsLan&&window.__dsLan.onResponse&&window.__dsLan.onResponse("
+                        + JSONObject.quote(requestId) + ")");
             }
         });
 
@@ -536,6 +570,89 @@ public class MainActivity extends Activity {
             });
         }
 
+        // ── 局域网直连（手机↔手机）─────────────────────────────────────────
+
+        /**
+         * 启动局域网监听与广播。页面每次进入可见状态都会调用（幂等）。
+         *
+         * @param deviceId   本机设备 id，必须非空（记录里的 device 字段同源）
+         * @param deviceName 展示用设备名
+         * @param pairTag    口令指纹；空串表示没设口令，仍广播但不配对
+         * @return 本机信息 JSON（tcp 端口、局域网地址、udp 端口）；失败时返回 {"error":"..."}
+         */
+        @JavascriptInterface
+        public String lanStart(String deviceId, String deviceName, String pairTag) {
+            if (lan == null) {
+                return "{\"error\":\"not ready\"}";
+            }
+            try {
+                String info = lan.start(deviceId, deviceName, pairTag);
+                bridgeLog("lanStart " + info);
+                return info;
+            } catch (Exception e) {
+                bridgeLog("lanStart 失败：" + e);
+                return "{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+            }
+        }
+
+        /** 停止监听与广播（页面不可见、或用户关掉开关时调用）。 */
+        @JavascriptInterface
+        public void lanStop() {
+            if (lan != null) {
+                lan.stop();
+            }
+        }
+
+        /** 当前在线设备表（JSON 数组字符串）。 */
+        @JavascriptInterface
+        public String lanPeers() {
+            return lan == null ? "[]" : lan.peersJson();
+        }
+
+        /**
+         * 取走回调里通知的那条数据。
+         *
+         * @param requestId onRequest / onResponse 给的 id
+         * @return {"ok":true,"payload":"..."} 或 {"ok":false,"error":"..."}；没有则 null
+         */
+        @JavascriptInterface
+        public String lanTake(String requestId) {
+            return lan == null ? null : lan.take(requestId);
+        }
+
+        /**
+         * 向对端发一个请求（加密信封由页面组装好）。
+         *
+         * @param requestId 页面生成的 id，结果通过 window.__dsLan.onResponse 通知
+         * @param host      对端地址（来自发现表）
+         * @param port      对端 TCP 端口（来自发现表）
+         * @param payload   信封 JSON
+         */
+        @JavascriptInterface
+        public void lanSend(String requestId, String host, int port, String payload) {
+            if (lan != null) {
+                lan.send(requestId, host, port, payload);
+            }
+        }
+
+        /**
+         * 回复一个收到的请求。
+         *
+         * @param requestId onRequest 给的 id
+         * @param payload   信封 JSON
+         * @return true 表示请求还在等待（没被超时清掉）
+         */
+        @JavascriptInterface
+        public boolean lanReply(String requestId, String payload) {
+            return lan != null && lan.reply(requestId, payload);
+        }
+
+        /** 本机局域网地址（界面展示 + 自环自检用）。 */
+        @JavascriptInterface
+        public String lanAddress() {
+            return LanLink.localAddress();
+        }
+
         /**
          * 把页面里的导出内容交给系统文件选择器落盘。
          *
@@ -699,6 +816,25 @@ public class MainActivity extends Activity {
         if (debugMode) android.util.Log.d("DSApp", "[bridge] " + msg);
     }
 
+    /**
+     * 在页面里执行一段脚本。
+     *
+     * 必须回 UI 线程：evaluateJavascript 只能在创建 WebView 的线程调用，
+     * 而调用方（LanLink 的收发线程）都在工作线程上。
+     *
+     * @param script 要执行的脚本；只用来做「通知」，大块数据由页面反过来取（见 LanLink.take）
+     */
+    private void evalJs(final String script) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (web != null) {
+                    web.evaluateJavascript(script, null);
+                }
+            }
+        });
+    }
+
     // ── <input type=file> 的支持代码 ─────────────────────────────────────────
 
     /**
@@ -849,6 +985,31 @@ public class MainActivity extends Activity {
         super.onBackPressed();
     }
 
+    /**
+     * 回到前台：重新持有 Wi-Fi 组播锁（不解锁就收不到局域网广播，见 LanLink 类注释）。
+     * 真正的「开始广播」仍由页面驱动的 lanStart 决定，这里只负责锁与前台标记。
+     */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (lan != null) {
+            lan.setForeground(true);
+        }
+    }
+
+    /**
+     * 退到后台：立即释放组播锁并停止广播。
+     * 不释放会一直占着 Wi-Fi 的广播/组播过滤开关，待机耗电明显。
+     * TCP 监听保留：对端推过来的请求仍能落库。
+     */
+    @Override
+    protected void onPause() {
+        if (lan != null) {
+            lan.setForeground(false);
+        }
+        super.onPause();
+    }
+
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
@@ -863,6 +1024,11 @@ public class MainActivity extends Activity {
         pendingBytes = null;
         // 页面都没了，悬着的文件选择回调必须结掉，否则它对应的 input 会一直卡住
         cancelPendingFileChooser();
+        // 传输层也必须停：否则这两个端口和线程会跟着进程一直挂着
+        if (lan != null) {
+            lan.stop();
+            lan = null;
+        }
         if (web != null) {
             web.removeJavascriptInterface("__DS_BRIDGE__");
             web.destroy();

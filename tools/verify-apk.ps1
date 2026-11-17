@@ -157,8 +157,11 @@ Test-Ok ($badging -match ("versionName='" + [regex]::Escape($verName) + "'")) "v
 Test-Ok ($badging -match "sdkVersion:'26'") 'minSdk 26'
 Test-Ok ($badging -match "targetSdkVersion:'34'") 'targetSdk 34'
 Test-Ok ($badging -match 'android\.permission\.INTERNET') '已声明 INTERNET 权限'
+# 局域网直连用 WifiManager.createMulticastLock() 收广播，必须有这条 normal 级权限，
+# 否则广播只发不收（表现为「别人看得见我、我看不见别人」）。
+Test-Ok ($badging -match 'android\.permission\.CHANGE_WIFI_MULTICAST_STATE') '已声明 CHANGE_WIFI_MULTICAST_STATE 权限（组播锁）'
 $permCount = ([regex]::Matches($badging, 'uses-permission:')).Count
-Test-Ok ($permCount -eq 1) "只声明 1 条权限（实际 $permCount 条）"
+Test-Ok ($permCount -eq 2) "权限正好 2 条：INTERNET + CHANGE_WIFI_MULTICAST_STATE（实际 $permCount 条）"
 Test-Ok ($badging -match 'launchable-activity.*ds\.app\.MainActivity') '启动 Activity 就位'
 
 # ── 6. 网络安全配置（局域网同步依赖它）────────────────────────────────────
