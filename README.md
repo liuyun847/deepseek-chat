@@ -47,13 +47,23 @@ Settings → Data → Delete all chats clears all local conversations, original 
 
 The repo ships a zero-dependency sync service plus a client entry point for syncing chats and messages between devices on the same machine or LAN.
 
-Start the service (Node.js 22+, built-in modules only):
+Start the service (Node.js 22+, built-in modules only). On Windows the scripts below do it for you — idempotent, they exit 0 only after `GET /api/health` reports `format=chat-demo-sync`:
 
-```sh
-node sync-server/server.mjs --port 7788
+```powershell
+.\sync-server\start.ps1                      # start (hidden window, port 7788; -Port / SYNC_PORT to change)
+.\sync-server\stop.ps1                       # stop by port, idempotent
+node sync-server/server.mjs --port 7788      # or run it in the foreground to see the service log
 ```
 
+Logs: `sync-server\logs\start.log` (start/stop results). The service itself prints to stdout only and starts.ps1 deliberately does not redirect it — see the note in `start.ps1` (redirecting makes the long-lived node hold the autostart stderr file, which turned the next logon run into a silent no-op).
+
 It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-data.json`. For other devices on the LAN, start it with `--host 0.0.0.0` and enter this machine's IP in the client. In the client, open Settings → Multi-device sync, fill in the server URL (for example `http://127.0.0.1:7788`) and device name, then "Test connection" → "Sync now".
+
+On the page served by `local-server` (next section) the URL can be **left empty**: sync then uses the same-origin `/sync/api/*`, which that service forwards to `127.0.0.1:7788`, so the browser shows phone-synced chats with zero configuration. A typed URL always wins.
+
+No restart is needed when the data file changes underneath: the service stats the file on every `/api/health`, `/api/state` and `POST /api/sync` and re-reads it (merging by last-write-wins) when someone else wrote it — so chats that arrive over P2P show up in the browser immediately, without bouncing `sync-server`.
+
+Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` runs `sync-server\start.ps1` once per logon through a windowless Windows PowerShell 5.1 — same pattern as the web service below (rename it to `.vbs.disabled` to turn it off; its own stderr goes to `sync-server\logs\autostart.err.log`). It listens on `127.0.0.1:7788` only: phones reach this PC over P2P (`lan-peer`), not through that port.
 
 Sync is record-granular last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself.
 
@@ -120,7 +130,7 @@ Logs: `lan-peer\logs\peer.log` (service), `start.log` (start/stop results), `sta
 
 ## Local web service (browser access + autostart)
 
-`local-server/` is a zero-dependency Node service (built-in modules only) that does two things: it serves `dist/` to the browser, and it reverse-proxies `/anthropic/*` and `/models` to `https://api.deepseek.com`. **The API key lives only on the server** — not a single byte of it ends up in the browser bundle.
+`local-server/` is a zero-dependency Node service (built-in modules only) that serves `dist/` to the browser, reverse-proxies `/anthropic/*` and `/models` to `https://api.deepseek.com`, and reverse-proxies `/sync/api/*` to the sync service (`127.0.0.1:7788` by default, override with `SYNC_UPSTREAM`). **The API key lives only on the server** — not a single byte of it ends up in the browser bundle.
 
 ```powershell
 pnpm --config.shell-emulator=true build:web   # frontend build WITHOUT the baked key -> dist/
@@ -133,7 +143,8 @@ Open <http://127.0.0.1:7789/> (change the port with the `PORT` environment varia
 - Port 7789, loopback only. A non-loopback `HOST` (say `0.0.0.0`) is refused at startup: this service lends the server-side key to the page, so exposing it to the LAN means handing that key to every device on the network — that needs a passphrase/auth mechanism first, which is out of scope for now.
 - Key source: `DS_API_KEY` wins, then `.secrets\api-key.txt` (single line, git-ignored). With neither, the service still starts, static pages work, and proxy routes answer 503 with instructions; `GET /api/health` only reports `keyConfigured: true/false` and never echoes the key.
 - Why the key is not in the frontend: `dist/` is plain static content, so whoever fetches the JS gets the key. The web build therefore stops sending credentials: `src/services/localService.ts` probes `GET /api/health` on startup, and on a hit switches to relative `/anthropic/...` paths while the server injects `x-api-key`. In the APK (`https://dsapp.local`) and under `file://` the probe is false, so behaviour is unchanged — no second build flavor needed.
-- Cross-site protection: proxy routes check `Origin` (present and different from this service → 403, which stops any web page from spending your key through `127.0.0.1`) and `Host` (loopback only, which blocks DNS rebinding); request bodies are capped at 20 MB (413 beyond that).
+- Cross-site protection: proxy routes check `Origin` (present and different from this service → 403, which stops any web page from spending your key through `127.0.0.1`) and `Host` (loopback only, which blocks DNS rebinding); request bodies are capped at 20 MB (413 beyond that, 32 MB for the sync route).
+- Sync route: `/sync/api/{health,state,sync}` → `http://127.0.0.1:7788/api/{health,state,sync}`, method/body/headers passed through. It forwards the page's sync token header but never injects a credential, and `SYNC_UPSTREAM` may only point at a loopback address. If the sync service is down the route answers **502** with a Chinese reason (`{"error":{"type":"sync_upstream_down",…}}`) and the settings page shows "同步服务未启动" instead of a bare fetch error. The proxy deliberately reads nothing from `sync-server/data/sync-data.json`: that JSON already has two writers, and a third one would silently drop other writers' records.
 - Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-web.vbs` runs `local-server\start.ps1` through a windowless Windows PowerShell 5.1 (same pattern as `dsh-desktop-autostart.vbs`: two log files, rename to disable). To turn it off, rename the file to `.vbs.disabled`. Logs live in `local-server\logs\`: `start.log` (start/stop results) and `server.log` (service log, rotated at 2 MB).
 - Serving a default (`build`, key-baked) artifact shows a dismissible yellow banner at the top of the page: "This page carries a built-in API Key — use it on your own machine only", because that artifact hands the key to anyone who can open the page. `build:web` artifacts show no banner.
 - ⚠ The `dist/` produced by `build:web` has **no key** in it. Rebuild with the default `pnpm --config.shell-emulator=true build` before packaging an APK — step 0 of `tools\build-apk.ps1` blocks a keyless artifact and prints exactly that command (you never get a silently keyless APK).

@@ -47,13 +47,23 @@ API Key、设置和系统提示词库保存在浏览器 localStorage，会话及
 
 仓库自带一个零依赖的同步服务与客户端入口，用于在本机或局域网内多台设备之间同步会话与消息。
 
-启动服务（Node.js 22+，只需要内置模块）：
+启动服务（Node.js 22+，只需要内置模块）。Windows 上直接用下面两个脚本：幂等，且只有 `GET /api/health` 报出 `format=chat-demo-sync` 才返回 0：
 
-```sh
-node sync-server/server.mjs --port 7788
+```powershell
+.\sync-server\start.ps1                      # 启动（隐藏窗口，端口 7788；用 -Port 或 SYNC_PORT 改）
+.\sync-server\stop.ps1                       # 按端口停止，幂等
+node sync-server/server.mjs --port 7788      # 或前台跑，看服务自己的输出
 ```
 
+日志：`sync-server\logs\start.log`（启停结果）。服务本身只往 stdout 写，start.ps1 刻意不做重定向（原因写在 start.ps1 文件头：一旦重定向，长驻的 node 会占住开机自启的 stderr 文件，下次登录那次自启就变成静默空转）。
+
 默认只监听 `127.0.0.1`，数据写在 `sync-server/data/sync-data.json`；局域网内其它设备要连时用 `--host 0.0.0.0`，并把本机 IP 填进客户端。客户端在 设置 → 多端同步 里填服务地址（例如 `http://127.0.0.1:7788`）、设备名，然后「测试连接」→「立即同步」。
+
+由 `local-server` 托管的浏览器页面（见下一节）可以**留空**：同步自动走同源 `/sync/api/*`，由本机服务转发到 `127.0.0.1:7788`，于是手机同步来的会话零配置就能看到。填了地址则优先用填的那台。
+
+数据文件被外部更新后**不需要重启 sync-server**：它在 `/api/health`、`/api/state`、`POST /api/sync` 处理前先 stat 一次，发现被别处写过就重读并按 LWW 并进内存——手机 P2P 推来的会话因此立刻能在浏览器看到。
+
+开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 每次登录用无窗口的 Windows PowerShell 5.1 跑一次 `sync-server\start.ps1`（与下一节的 Web 服务同一套范式；改名成 `.vbs.disabled` 即关闭，它自己的 stderr 落在 `sync-server\logs\autostart.err.log`）。只监听 `127.0.0.1:7788`：手机走 P2P（`lan-peer`）到这台电脑，不经过这个端口。
 
 同步按记录粒度做 LWW：两边独有的记录都会保留，同一条记录两端都改过时保留最后修改的那一版；删除用墓碑同步，不会被另一端拉回来；分支树字段（`parentId` / `selectedChildId` / `rootMessageId`）原样同步。附件只同步文件信息，不含原件。
 
@@ -119,7 +129,7 @@ New-NetFirewallRule -DisplayName 'chat-demo LAN P2P TCP' -Direction Inbound -Pro
 
 ## 本机 Web 服务（浏览器访问 + 开机自启）
 
-`local-server/` 是一个零依赖的 Node 服务（只用内置模块），做两件事：把 `dist/` 静态托管给浏览器，把 `/anthropic/*` 与 `/models` 反向代理到 `https://api.deepseek.com`。**API key 只存在服务端**，浏览器产物里一个字都没有。
+`local-server/` 是一个零依赖的 Node 服务（只用内置模块）：把 `dist/` 静态托管给浏览器；把 `/anthropic/*` 与 `/models` 反向代理到 `https://api.deepseek.com`；把 `/sync/api/*` 反向代理到同步服务（默认 `127.0.0.1:7788`，可用 `SYNC_UPSTREAM` 改）。**API key 只存在服务端**，浏览器产物里一个字都没有。
 
 ```powershell
 pnpm --config.shell-emulator=true build:web   # 构建不含内置 key 的前端产物 -> dist/
@@ -132,7 +142,8 @@ pnpm --config.shell-emulator=true build:web   # 构建不含内置 key 的前端
 - 端口 7789，只监听 `127.0.0.1`。`HOST=0.0.0.0` 之类的非回环地址会被直接拒绝启动：本服务把服务端的 key 借给页面用，对局域网开放等于把 key 交给同网段的任何设备，要这么用必须先有口令/鉴权机制（本期没做）。
 - key 来源：环境变量 `DS_API_KEY` 优先，其次 `.secrets\api-key.txt`（单行，已被 .gitignore 忽略）。两处都没有时服务照常启动，静态页面能开，代理路由返回 503 并说明怎么配；`GET /api/health` 里只有 `keyConfigured: true/false`，不回显 key。
 - 为什么 key 不进前端：`dist/` 是明文静态资源，谁拿到 JS 谁就拿到 key。所以网页版改成「浏览器不带鉴权头，服务端注入 `x-api-key`」：`src/services/localService.ts` 启动时探测 `GET /api/health`，命中就改用相对路径 `/anthropic/...`；APK（`https://dsapp.local`）与 `file://` 下探测直接为 false，行为与以前一致，不需要第二套构建产物。
-- 跨站防护：代理路由校验 `Origin`（存在且与本服务不同源 → 403，挡「任意网页借 127.0.0.1 白嫖 key」）与 `Host`（只认回环，挡 DNS rebinding）；请求体上限 20 MB，超限 413。
+- 跨站防护：代理路由校验 `Origin`（存在且与本服务不同源 → 403，挡「任意网页借 127.0.0.1 白嫖 key」）与 `Host`（只认回环，挡 DNS rebinding）；请求体上限 20 MB，超限 413（同步路由是 32 MB，与 sync-server 一致）。
+- 同步路由：`/sync/api/{health,state,sync}` → `http://127.0.0.1:7788/api/{health,state,sync}`，方法、请求体与口令头原样透传，不注入任何凭据；`SYNC_UPSTREAM` 只允许指向回环地址。同步服务没起来时这条路由回 **502** 并带中文原因（`{"error":{"type":"sync_upstream_down",…}}`），设置页显示「同步服务未启动」而不是裸 fetch 错。它刻意不直接读 `sync-server/data/sync-data.json`：那份 JSON 已有两个写者（7788 与 lan-peer），再加一个会静默覆盖别人刚写的记录。
 - 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-web.vbs` 用无窗口的 Windows PowerShell 5.1 调 `local-server\start.ps1`（与 `dsh-desktop-autostart.vbs` 同一套范式：双日志、改扩展名即禁用）。关掉自启就把该文件改名成 `.vbs.disabled`。日志在 `local-server\logs\`：`start.log`（启停结果）、`server.log`（服务日志，2 MB 轮转）。
 - 用默认 `build`（带 key）的产物起服务时，页面顶部会出现一条可关闭的黄色提示条「当前页面携带内置 API Key，仅建议本机自用」——提醒这份产物把 key 发给每个能打开页面的人；`build:web` 的产物没有这条。
 - ⚠ `build:web` 产出的 `dist/` **不含 key**。打 APK 前必须用默认的 `pnpm --config.shell-emulator=true build` 重新构建，否则 `tools\build-apk.ps1` 第 0 步会拦住并提示这条命令（不会静默打出一个没 key 的包）。

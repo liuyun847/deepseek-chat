@@ -5,6 +5,19 @@
 
 ## 启动
 
+Windows 上建议用脚本（幂等；只有 `GET /api/health` 报出 `format=chat-demo-sync` 才返回 0）：
+
+```powershell
+.\sync-server\start.ps1        # 隐藏窗口启动，默认 127.0.0.1:7788；-Port / SYNC_PORT 改端口
+.\sync-server\stop.ps1         # 按端口停止，幂等
+```
+
+开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 调一次 `start.ps1`，
+日志在 `sync-server\logs\start.log`（启停结果）与 `logs\autostart.err.log`（那次隐藏运行的 stderr）。
+服务本身只往 stdout 写，start.ps1 刻意不重定向（否则长驻的 node 会占住自启的 stderr 文件，见 start.ps1 文件头）。
+
+手动前台运行（能直接看到服务日志）：
+
 ```sh
 # 默认：127.0.0.1:7788，数据写 sync-server/data/sync-data.json
 node sync-server/server.mjs
@@ -133,6 +146,14 @@ curl -s -o NUL -w "%{http_code}\n" -H "Authorization: Bearer <口令>" http://12
 ```
 
 写入是先写 `*.tmp` 再 rename 的原子替换；进程被强杀最多丢掉最后一次尚未落盘的写入（去抖 200ms）。
+
+**数据文件被外部更新后不需要重启本服务**：`/api/health`、`/api/state`、`POST /api/sync` 处理前会
+先 `stat` 一次（`mtimeMs`+`size`，只 stat 不读内容），指纹变了才重读文件并按 LWW **并进**内存
+（是合并，不是整份替换，因此不会盖掉内存里刚接受、还没落盘的记录），然后照常处理请求。
+覆盖的场景：手机把记录 P2P 推给 `lan-peer` 后它原子写了同一份 JSON、手工编辑数据文件、
+另一个实例写过。读出问题（正被原子 rename 替换时 Windows 会给 `EBUSY`/`EPERM`）最多重试 3 次、
+每次 15ms，3 次都失败就先用内存视图应答（不 500、不空响应），下次请求再对账。
+落盘失败（rename 撞上外部写）同样有限重试：10 秒窗口内每 200ms 再试一次。
 
 ## 协议版本
 
