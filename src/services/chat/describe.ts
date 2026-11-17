@@ -1,5 +1,6 @@
 import { isTranslationKey, translate } from '../../i18n/index.js'
 import { classifyStatus } from '../api/errors.js'
+import { LOCAL_SERVICE_NOTICE_KEYS, isLocalService } from '../localService.js'
 import type { AssistantMessage } from './types.js'
 
 export type Notice = {
@@ -24,6 +25,11 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
       localMessage && isTranslationKey(localMessage.key)
         ? translate(localMessage.key, localMessage.params)
         : reply.error.message
+    // 本机服务自身的问题（服务停了、没配 key）：文案已写明怎么修，
+    // 别让下面的状态码分类把它改写成「服务繁忙」
+    if (localMessage && LOCAL_SERVICE_NOTICE_KEYS.includes(localMessage.key)) {
+      return { text: message }
+    }
     // 历史补传错误刷新后仍需说明原因，恢复沿用附件卡片或重新生成。
     if (kind === 'upload') {
       return { text: message || translate('uploadFileStatusFailed') }
@@ -33,7 +39,10 @@ export const describeReply = (reply: AssistantMessage): Notice | null => {
     }
     switch (classifyStatus(status)) {
       case 'unauthorized':
-        return { text: translate('replyInvalidApiKey'), action: 'apiKey' }
+        // 走本机服务时 key 在服务端，401 说明服务端那份失效了，跳去设置里改没有意义
+        return isLocalService()
+          ? { text: translate('localServiceKeyRejected') }
+          : { text: translate('replyInvalidApiKey'), action: 'apiKey' }
       case 'insufficientBalance':
         return { text: translate('replyInsufficientBalance'), action: 'topUp' }
       case 'rateLimited':

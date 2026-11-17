@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { IconEditOutline16 } from '../base/icons.js'
+import { useLocalService } from '../../services/localService.js'
 import { isBuiltinApiKey, useSettings } from '../../services/settings.js'
 import { useIsMobile } from '../../app/viewport.js'
 import { IconButton } from '../base/IconButton.js'
@@ -22,14 +23,24 @@ export const ApiKeyField = ({ editor }: { editor: ApiKeyEditor }) => {
   const t = useTranslate()
   const isMobile = useIsMobile()
   const { apiKey, editing, setEditing, form, showInput } = editor
+  // 本机服务（local-server）托管本页时 key 在服务端，浏览器里改不了也不该存
+  const localService = useLocalService((state) => state.active)
   // 内置 key 生效时说明来历，免得用户以为应用记住了自己没填过的 key
-  const label = isBuiltinApiKey(apiKey) ? t('apiKeyBuiltin') : t('apiKeyStart')
+  const label = localService
+    ? t('apiKeyLocalService')
+    : isBuiltinApiKey(apiKey)
+      ? t('apiKeyBuiltin')
+      : t('apiKeyStart')
 
   return (
     <div className={styles.cell}>
       <div className={styles.apiKey}>
         <div className={styles.label}>{label}</div>
-        {apiKey && !editing ? (
+        {localService ? (
+          <div className={styles.apiKeySaved}>
+            <span className={styles.apiKeyMask}>{t('apiKeyLocalServiceNote')}</span>
+          </div>
+        ) : apiKey && !editing ? (
           <div className={styles.apiKeySaved}>
             <span className={styles.apiKeyMask}>{'*'.repeat(apiKey.length)}</span>
             <IconButton

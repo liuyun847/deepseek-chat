@@ -1,4 +1,5 @@
 import { translate, type TranslationMessage } from '../../i18n/index.js'
+import { localServiceReady } from '../localService.js'
 import { readMessageEvent } from './parseEvent.js'
 import { readServerSentEvents } from './sse.js'
 import type {
@@ -11,10 +12,14 @@ import type {
   ModelInfo,
 } from './types.js'
 
-/** 构建期 API 地址，默认 https://api.deepseek.com；本地开发支持开发服务器代理 */
-export const API_ORIGIN = __API_ORIGIN__
-/** Anthropic 兼容接口的前缀 */
-const ANTHROPIC_BASE_URL = `${API_ORIGIN}/anthropic/v1`
+/** 构建期 API 地址，默认 https://api.deepseek.com（见 rspack.config.ts） */
+const BUILTIN_API_ORIGIN = __API_ORIGIN__
+/**
+ * 接口路径一律写成相对路径，由 request() 拼上实际基址：
+ * 页面由本机服务（local-server/）托管时基址是空串 —— 同源反向代理 /anthropic/*，
+ * key 由服务端注入；其余场景（APK 的 WebView、file:// 打开、开发服务器）拼 BUILTIN_API_ORIGIN。
+ */
+const ANTHROPIC_BASE_URL = '/anthropic/v1'
 /** 引用 Files API 上传的图片、调用 Anthropic 兼容 Files API 时必须携带 */
 const FILES_BETA = 'files-api-2025-04-14'
 
@@ -50,6 +55,25 @@ const isErrorBody = (value: unknown): value is ApiErrorBody =>
   'error' in value &&
   typeof (value as ApiErrorBody).error?.message === 'string'
 
+/** 本机服务没配 key 时回的错误类型（见 local-server/server.mjs） */
+const LOCAL_NO_KEY_TYPE = 'local_service_no_key'
+
+/**
+ * 去掉鉴权头。
+ *
+ * 走本机服务时 key 在服务端，浏览器不该带自己的：带空串会让上游把空串当凭据，
+ * 带用户手填的 key 又会和服务端的抢。
+ *
+ * @param headers 原始请求头
+ * @returns 去掉 x-api-key 与 authorization 的副本
+ */
+const withoutAuth = (headers: HeadersInit | undefined): HeadersInit => {
+  const next = new Headers(headers)
+  next.delete('x-api-key')
+  next.delete('authorization')
+  return next
+}
+
 const readErrorResponse = async (
   response: Response,
   kind: 'http' | 'protocol' = 'http',
@@ -60,6 +84,11 @@ const readErrorResponse = async (
   try {
     const body: unknown = JSON.parse(text)
     if (isErrorBody(body)) {
+      // 本机服务未配置 key：这不是上游的失败，换成本地文案，
+      // 免得 503 被状态码分类改写成「服务繁忙」
+      if (body.error.type === LOCAL_NO_KEY_TYPE) {
+        return new ApiError(kind, { key: 'localServiceNoKey' }, response.status)
+      }
       message = body.error.message
     }
   } catch {
@@ -68,13 +97,30 @@ const readErrorResponse = async (
   return new ApiError(kind, message, response.status)
 }
 
-export const request = async (url: string, init: RequestInit): Promise<Response> => {
+/**
+ * 发一次 API 请求。
+ *
+ * @param path 以 / 开头的接口路径，如 `/anthropic/v1/messages`
+ * @param init fetch 参数（不含基址）
+ * @returns 2xx 的响应
+ * @throws ApiError 非 2xx（携带状态码与服务端文案），或请求没送到服务端（network）
+ */
+export const request = async (path: string, init: RequestInit): Promise<Response> => {
+  // 等探测结果：走本机服务时基址为空（同源代理），否则是构建期地址
+  const proxied = await localServiceReady
   let response: Response
   try {
-    response = await fetch(url, init)
+    response = await fetch(proxied ? path : BUILTIN_API_ORIGIN + path, {
+      ...init,
+      ...(proxied ? { headers: withoutAuth(init.headers) } : {}),
+    })
   } catch (error) {
     if (init.signal?.aborted) {
       throw error
+    }
+    // 页面就是本机服务给的、请求却发不出去：服务已经被停掉了
+    if (proxied) {
+      throw new ApiError('network', { key: 'localServiceOffline' })
     }
     throw new ApiError('network', error instanceof Error ? error.message : String(error))
   }
@@ -84,6 +130,10 @@ export const request = async (url: string, init: RequestInit): Promise<Response>
   return response
 }
 
+/**
+ * 直连用的鉴权头。走本机服务时 request() 会把它们摘掉（key 由服务端注入），
+ * 所以这里不用关心当前是不是代理模式。
+ */
 const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string> => ({
   // DeepSeek 兼容接口的鉴权方式，也可使用 Authorization: Bearer。
   'x-api-key': apiKey,
@@ -96,7 +146,7 @@ const anthropicHeaders = (apiKey: string, beta: boolean): Record<string, string>
  * 响应形状不符合协议时返回空数组，由调用方回退到内置列表。
  */
 export const listModels = async (apiKey: string, signal?: AbortSignal): Promise<ModelInfo[]> => {
-  const response = await request(`${API_ORIGIN}/models`, {
+  const response = await request('/models', {
     method: 'GET',
     headers: { Authorization: `Bearer ${apiKey}` },
     signal,

@@ -1,6 +1,8 @@
 import { useEffect } from 'react'
 import { useTranslate } from '../i18n/index.js'
 import { useSettings } from '../services/settings.js'
+import { localServiceReady } from '../services/localService.js'
+import { LocalServiceBanner } from './LocalServiceBanner.js'
 import { useIsMobile, useMobileViewport, usePreventPageScroll } from './viewport.js'
 import {
   bindChatPersistence,
@@ -66,8 +68,9 @@ export const App = () => {
 
   useEffect(() => {
     void initChat()
-    // 首次打开先在设置里输入 API Key
-    ensureApiKey()
+    // 首次打开先在设置里输入 API Key；由本机服务托管本页时不填也算就绪，
+    // 但要等探测结果（localServiceReady）才知道是哪种情况
+    void localServiceReady.then(() => ensureApiKey())
   }, [])
 
   return (
@@ -75,6 +78,7 @@ export const App = () => {
       <div ref={frameRef} className={styles.frame}>
         {isMobile ? <MobileSider /> : siderCollapsed ? null : <Sider />}
         <main className={styles.main}>
+          <LocalServiceBanner />
           {saveError ? (
             <div className={styles.saveError} role="alert">
               <span>{t('sessionSaveFailed')}</span>

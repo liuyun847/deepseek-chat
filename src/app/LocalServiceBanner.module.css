@@ -1,0 +1,21 @@
+/*
+ * 本机服务的提示条（携带内置 key 时的警告）。
+ *
+ * 用半透明琥珀色而不是固定浅黄：浅色与深色主题下都能读，不必为两套主题各写一份。
+ */
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 8px 16px;
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
+  color: var(--dsw-alias-label-primary);
+  background-color: rgb(255 193 7 / 0.18);
+  border-bottom: 1px solid rgb(255 193 7 / 0.4);
+}
+
+.text {
+  flex: 1;
+  min-width: 0;
+}

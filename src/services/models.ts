@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { listModels } from './api/client.js'
 import type { ModelInfo } from './api/types.js'
+import { localServiceReady } from './localService.js'
 import { DEFAULT_MODEL, useSettings } from './settings.js'
 
 /**
@@ -54,12 +55,13 @@ let sequence = 0
 /**
  * 拉取可用模型列表。
  *
- * @param apiKey 当前 API Key；为空时保持内置列表，不发请求
+ * @param apiKey 当前 API Key；为空且不是本机服务托管时保持内置列表，不发请求
+ *   （本机服务的 key 在服务端，浏览器没有 key 也能拉列表）
  * @param force 手动重试时忽略缓存
  * @returns 无；状态写入 useModelList，失败时回退内置列表并记录原因
  */
 export const loadModels = async (apiKey: string | null, force = false): Promise<void> => {
-  if (!apiKey) {
+  if (!apiKey && !(await localServiceReady)) {
     sequence += 1
     loadedFor = null
     useModelList.setState({ status: 'builtin', models: BUILTIN_MODELS, error: null })
@@ -71,7 +73,7 @@ export const loadModels = async (apiKey: string | null, force = false): Promise<
   const id = ++sequence
   useModelList.setState({ status: 'loading' })
   try {
-    const models = normalize(await listModels(apiKey))
+    const models = normalize(await listModels(apiKey ?? ''))
     if (id !== sequence) {
       return
     }

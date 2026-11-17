@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { isLocalService } from '../../services/localService.js'
 import { useSettings } from '../../services/settings.js'
 
 /** 设置弹窗的分组：通用设置 / 系统提示词 / 多端同步 / 手机直连 / 数据管理 */
@@ -15,9 +16,12 @@ export const openSettings = (section: SettingsSection) =>
 
 export const closeSettings = () => useSettingsDialog.setState({ open: false })
 
-/** 没有 API Key 时打开设置并选中 API Key 所在的「数据管理」，返回是否已有 Key */
+/**
+ * 没有 API Key 时打开设置并选中 API Key 所在的「数据管理」，返回是否已有 Key。
+ * 由本机服务托管本页时 key 在服务端，浏览器不填也算就绪。
+ */
 export const ensureApiKey = () => {
-  if (useSettings.getState().apiKey) {
+  if (useSettings.getState().apiKey || isLocalService()) {
     return true
   }
   openSettings('data')
