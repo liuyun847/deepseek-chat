@@ -88,6 +88,35 @@ lan/engine.ts          编排：发现表、自动同步、节流、自检
 
 限制（明确说明）：只在同一网段内有效，访客网络/AP 隔离会挡掉广播；跨网段、需要中转的场景请继续用下面的 HTTP 同步。
 
+### 电脑作为直连对端
+
+`lan-peer/` 让电脑成为同一套协议的一等对端：手机可以直接和电脑同步，中间没有任何 HTTP 服务。线格式、消息类型、`PROTO` 版本、合并规则**一行没改**，手机 App 侧零改动。
+
+```powershell
+# 一次性：口令两端必须相同（≥8 位）。start.ps1 从 <仓库>\.secrets\lan-passphrase.txt 读（单行，已 gitignore），
+# 也可以用 -Passphrase 参数或 $env:LAN_PASSPHRASE；它不会出现在 node 的命令行里。
+notepad .secrets\lan-passphrase.txt
+
+.\lan-peer\start.ps1        # 首次会先编译共享 TS 模块，然后隐藏启动并自检（TCP 端口可连 + 广播已发）
+.\lan-peer\stop.ps1         # 停止，幂等
+node lan-peer\peer.mjs --passphrase <同一个口令>   # 想前台看日志就直接这样跑
+```
+
+手机侧：设置 → 手机直连 → 填**同一个口令** → 保存并配对。「发现的设备」里约 4 秒内出现电脑，之后自动同步（手机端永远是发起方：`dev-…` 字典序小于电脑的 `pc-…`；电脑有新数据时发一个 ping 让手机来拉）。
+
+- 数据只有一份 JSON：`sync-server/data/sync-data.json`，就是 `sync-server/server.mjs` 用的那个文件（`{format:'chat-demo-sync',version:2,records:{…}}`）。所以 P2P 同步过来的记录，网页端连上 7788 就能看到，反过来也一样；合并仍是 LWW + 墓碑，不会把删除复活。
+- 写入是「读最新 → 合并 → 原子 rename」。如果 7788 同时在跑，它会用自己的内存视图整份覆盖文件，期间只有 P2P 才有的记录会短暂消失——本程序每 45 秒按 LWW 把它们补回（墓碑时间更新，仍然优先）。最干净的做法是两者只用其一。
+- 多网卡：默认往每块非回环网卡的广播地址 + 255.255.255.255 都发一份。用 `--iface 192.168.1.10`（网卡地址，或该网段的广播地址）钉死一块网卡，例如本机有 VirtualBox 主机网卡时。
+- 只在同一网段有效：访客 Wi-Fi / AP 隔离会挡掉广播，那种网络里手机发现不到电脑。
+- 防火墙：放行入站 **UDP 47823**（发现）与**入站 TCP 上本程序挑的端口**（默认随机，启动日志与 `lan-peer/logs/state.json` 里有；想固定就加 `--port 47824`）。Windows 首次运行只会弹 TCP 监听那一条，UDP 要手工加：
+
+```powershell
+New-NetFirewallRule -DisplayName 'chat-demo LAN P2P' -Direction Inbound -Protocol UDP -LocalPort 47823 -Action Allow
+New-NetFirewallRule -DisplayName 'chat-demo LAN P2P TCP' -Direction Inbound -Protocol TCP -LocalPort 47824 -Action Allow
+```
+
+日志：`lan-peer\logs\peer.log`（服务自身）、`start.log`（启停结果）、`state.json`（当前端口/记录数/在线对端，也是 `start.ps1` 自检的依据）。口令永远不进日志，只出现「已配置」与公开的口令指纹 `pairTag`。开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-lan-peer.vbs`，改名成 `.vbs.disabled` 即禁用（与 Web 服务同一套路）。
+
 ## 本机 Web 服务（浏览器访问 + 开机自启）
 
 `local-server/` 是一个零依赖的 Node 服务（只用内置模块），做两件事：把 `dist/` 静态托管给浏览器，把 `/anthropic/*` 与 `/models` 反向代理到 `https://api.deepseek.com`。**API key 只存在服务端**，浏览器产物里一个字都没有。

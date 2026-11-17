@@ -88,6 +88,36 @@ With only one phone, Settings → Phone-to-phone → "Self test" sends a ping an
 
 Limits (stated up front): this only works inside one subnet — guest Wi-Fi and AP isolation block broadcasts. For cross-subnet or relayed setups keep using the HTTP sync above.
 
+### The PC as a peer
+
+`lan-peer/` makes the desktop a first-class peer of that same protocol, so a phone can sync straight to the PC with no HTTP server in between. Wire format, message types, `PROTO` version and merge rules are untouched — the phone app needs **zero changes**.
+
+```powershell
+# one-time: the passphrase must be identical on both sides (>= 8 chars).
+# start.ps1 reads it from <repo>\.secrets\lan-passphrase.txt (single line, gitignored),
+# or from -Passphrase, or from $env:LAN_PASSPHRASE - never from node's command line.
+notepad .secrets\lan-passphrase.txt
+
+.\lan-peer\start.ps1        # compiles the shared TS modules on first run, starts hidden, self-checks TCP port + broadcast
+.\lan-peer\stop.ps1         # stop; idempotent
+node lan-peer\peer.mjs --passphrase <same one>   # or run it in the foreground to watch the log
+```
+
+Then on the phone: Settings → Phone-to-phone → type the **same passphrase** → save & pair. The PC shows up under “Discovered devices” within ~4 seconds and sync starts on its own (the phone always initiates, because `dev-…` sorts before the PC's `pc-…` id; the PC sends a ping when it has something new to pull).
+
+- Data lives in one JSON file: `sync-server/data/sync-data.json` — the exact file `sync-server/server.mjs` uses (`{format:'chat-demo-sync',version:2,records:{…}}`). Rows that arrived over P2P are therefore visible to the web client as soon as it syncs against 7788, and vice versa. Merging is still LWW + tombstones, so nothing gets resurrected.
+- Writes are “read latest → merge → atomic rename”. If 7788 happens to run at the same time it rewrites the whole file from its own in-memory view, so P2P-only rows can vanish for a while; the peer re-merges them back from its own overlay on the 45 s tick (tombstones still win). Running only one of the two at a time is the clean setup.
+- Multi-NIC: the peer broadcasts on every non-loopback IPv4 interface plus 255.255.255.255. Pass `--iface 192.168.1.10` (an interface address, or that subnet's broadcast address) to pin it to one NIC, e.g. when a VirtualBox host-only adapter is in the way.
+- Same-subnet only: guest Wi-Fi and AP isolation drop broadcasts, so the phone will not discover the PC there.
+- Firewall: allow inbound **UDP 47823** (discovery) and inbound **TCP on the port the peer picked** (random by default; printed at startup and stored in `lan-peer/logs/state.json`, pin it with `--port 47824` if you prefer a fixed rule). Windows' first-run prompt only covers the TCP listener — add the UDP rule by hand:
+
+```powershell
+New-NetFirewallRule -DisplayName 'chat-demo LAN P2P' -Direction Inbound -Protocol UDP -LocalPort 47823 -Action Allow
+New-NetFirewallRule -DisplayName 'chat-demo LAN P2P TCP' -Direction Inbound -Protocol TCP -LocalPort 47824 -Action Allow
+```
+
+Logs: `lan-peer\logs\peer.log` (service), `start.log` (start/stop results), `state.json` (live ports/records/peers — also what `start.ps1` self-checks). The passphrase never appears in any log; only “configured” and the public `pairTag` do. Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-lan-peer.vbs` — rename it to `.vbs.disabled` to disable, same pattern as the web service.
+
 ## Local web service (browser access + autostart)
 
 `local-server/` is a zero-dependency Node service (built-in modules only) that does two things: it serves `dist/` to the browser, and it reverse-proxies `/anthropic/*` and `/models` to `https://api.deepseek.com`. **The API key lives only on the server** — not a single byte of it ends up in the browser bundle.
