@@ -156,7 +156,10 @@ export const stampOf = (records: Iterable<SyncRecord>): string => {
   return digest(lines)
 }
 
-/** 一批记录的规模统计 */
+/**
+ * 一批记录的规模统计。
+ * 只数会话与消息：设置、提示词、选中项混进 messages 会让界面上的「对方有多少数据」失真。
+ */
 export const statsOf = (records: Iterable<SyncRecord>): LanStats => {
   let sessions = 0
   let messages = 0
@@ -166,7 +169,7 @@ export const statsOf = (records: Iterable<SyncRecord>): LanStats => {
     }
     if (record.kind === 'session') {
       sessions += 1
-    } else {
+    } else if (record.kind === 'message') {
       messages += 1
     }
   }

@@ -4,11 +4,21 @@ import { createId } from '../utils/id.js'
 import type { TranslationKey } from '../i18n/index.js'
 import type { ReasoningEffort } from './api/types.js'
 import { normalizeLocation, type UserLocation } from './location.js'
+import { sanitizeSyncedSettings, type SyncedSettings } from './sync/protocol.js'
 
 export type Locale = 'zh-CN' | 'en-US'
 
 /** 主题偏好；默认跟随系统 */
 export type ThemePreference = 'light' | 'dark' | 'system'
+
+/**
+ * 全局字号档位；normal 用 theme.css 里的基础值，small / large 由
+ * body[data-font-scale] 覆盖 --ds-fs-* 与 --ds-lh-*（0.9 / 1.1 倍）。
+ */
+export type FontScale = 'small' | 'normal' | 'large'
+
+/** 字号默认档位：不写 data-font-scale，直接用基础值 */
+export const DEFAULT_FONT_SCALE: FontScale = 'normal'
 
 /** 默认模型：未选择过、或拉取模型列表失败时使用 */
 export const DEFAULT_MODEL = 'deepseek-flash'
@@ -26,17 +36,29 @@ export const REASONING_EFFORT_OPTIONS: { value: ReasoningEffort; label: Translat
   { value: 'max', label: 'settingsReasoningEffortMax' },
 ]
 
+/**
+ * 字号三档的展示顺序与文案 key：设置面板用这份顺序，避免与其它选择项不一致。
+ * 与 REASONING_EFFORT_OPTIONS 一样放在本模块，界面只负责翻译。
+ */
+export const FONT_SCALE_OPTIONS: { value: FontScale; label: TranslationKey }[] = [
+  { value: 'small', label: 'settingsFontScaleSmall' },
+  { value: 'normal', label: 'settingsFontScaleNormal' },
+  { value: 'large', label: 'settingsFontScaleLarge' },
+]
+
 /** 多端同步的默认服务地址：与 `sync-server/server.mjs` 的默认端口一致 */
 export const DEFAULT_SYNC_SERVER = 'http://127.0.0.1:7788'
 
 /**
- * 本机设置，存 localStorage：API Key、语言、主题、位置、模型、推理强度、
+ * 本机设置，存 localStorage：API Key、语言、主题、字号、位置、模型、推理强度、
  * 深度思考与智能搜索开关、侧边栏收起状态、多端同步的服务地址与设备身份。
  */
 type Settings = {
   apiKey: string | null
   locale: Locale
   themePreference: ThemePreference
+  /** 全局字号档位，只影响界面字号，不参与请求 */
+  fontScale: FontScale
   location: UserLocation | null
   /** 全局模型选择（不区分会话），深度思考与智能搜索也是全局粒度 */
   model: string
@@ -47,7 +69,7 @@ type Settings = {
   siderCollapsed: boolean
   /** 多端同步服务地址；空串表示还没配置 */
   syncServerUrl: string
-  /** 设备名，只用于界面展示与本机识别，不参与冲突判定 */
+  /** 设备名，只用于界面展示与本机识别，不参与冲突判定，也不参与同步（见 sync/protocol.ts） */
   syncDeviceName: string
   /** 设备 id：首次启动生成并固定，冲突时用于 tie-break，用户不可改 */
   syncDeviceId: string
@@ -58,6 +80,7 @@ const KEYS = {
   locale: 'chat-demo:locale',
   location: 'chat-demo:location',
   themePreference: 'chat-demo:theme-preference',
+  fontScale: 'chat-demo:font-scale',
   model: 'chat-demo:model',
   reasoningEffort: 'chat-demo:reasoning-effort',
   thinking: 'chat-demo:thinking',
@@ -66,6 +89,8 @@ const KEYS = {
   syncServerUrl: 'chat-demo:sync-server',
   syncDeviceName: 'chat-demo:sync-device-name',
   syncDeviceId: 'chat-demo:sync-device-id',
+  /** 设置的「最后修改时间」（毫秒），多端同步用它做整份 LWW 的时间戳 */
+  settingsUpdatedAt: 'chat-demo:settings-updated-at',
 } as const
 
 const read = (key: string) => {
@@ -166,6 +191,9 @@ const initialThemePreference = (): ThemePreference => {
 const isReasoningEffort = (value: string | null): value is ReasoningEffort =>
   value === 'low' || value === 'high' || value === 'max'
 
+const isFontScale = (value: string | null): value is FontScale =>
+  value === 'small' || value === 'normal' || value === 'large'
+
 /** 短随机码：设备 id 与默认设备名的一次性生成 */
 const randomSuffix = (length: number) => createId().replace(/-/g, '').slice(0, length)
 
@@ -202,11 +230,25 @@ const initialReasoningEffort = (): ReasoningEffort => {
   return isReasoningEffort(saved) ? saved : DEFAULT_REASONING_EFFORT
 }
 
-export const useSettings = create<Settings>(() => ({
+/** 未保存过（或保存值不可识别）时用标准档 */
+const initialFontScale = (): FontScale => {
+  const saved = read(KEYS.fontScale)
+  return isFontScale(saved) ? saved : DEFAULT_FONT_SCALE
+}
+
+/**
+ * 读一份完整设置（模块初始化与「同步落地后重载」共用同一套读取逻辑）。
+ * 两边共用是刻意的：内存里的值必须与「刷新页面后读到的值」逐字段相同，
+ * 否则同步的指纹会与落地内容对不上，两端会来回推同一份设置。
+ *
+ * @returns 从 localStorage 读出的设置（缺省值见各 initial* 函数）
+ */
+const readSettings = (): Settings => ({
   apiKey: initialApiKey(),
   locale: initialLocale(),
   location: initialLocation(),
   themePreference: initialThemePreference(),
+  fontScale: initialFontScale(),
   model: initialModel(),
   reasoningEffort: initialReasoningEffort(),
   thinking: read(KEYS.thinking) === 'true',
@@ -215,24 +257,140 @@ export const useSettings = create<Settings>(() => ({
   syncServerUrl: read(KEYS.syncServerUrl)?.trim() ?? '',
   syncDeviceName: initialSyncDeviceName(),
   syncDeviceId: initialSyncDeviceId(),
-}))
+})
+
+export const useSettings = create<Settings>(() => readSettings())
+
+/**
+ * 按 localStorage 现状重载设置。
+ * 同步把远端设置写进 localStorage 之后必须调用，否则界面要等刷新才变。
+ *
+ * @sideeffect 覆盖 useSettings 的全部字段（apiKey / syncDeviceId 也一起按存储重读，
+ *   但它们的存储值没被同步改过，因此实际不变）
+ */
+export const reloadSettingsFromStorage = (): void => {
+  useSettings.setState(readSettings())
+}
+
+/** 非负整数时间戳；坏值一律当作「没改过」 */
+const readStamp = (value: string | null): number => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0
+}
+
+/** 设置的最后修改时间（毫秒）；0 表示从没改过（同步时总是输给对端那份） */
+export const loadSettingsUpdatedAt = (): number => readStamp(read(KEYS.settingsUpdatedAt))
+
+/**
+ * 记一次设置修改。
+ * 单调递增：取 max(现在, 上次 + 1)，时钟回拨或与远端同一毫秒都不会让新改动变「更旧」。
+ *
+ * @sideeffect 写 chat-demo:settings-updated-at
+ */
+const touchSettingsUpdatedAt = (): void => {
+  write(KEYS.settingsUpdatedAt, String(Math.max(Date.now(), loadSettingsUpdatedAt() + 1)))
+}
+
+/**
+ * 本机可同步的那份设置（整份一条记录的内容）。
+ *
+ * 从当前状态取值后过一遍 sanitizeSyncedSettings：它按白名单逐字段重建，
+ * apiKey、syncDeviceId、syncDeviceName 与 LAN 相关键因此不可能混进同步记录
+ * （不是「记得删」，而是「装不进」）。
+ *
+ * @returns 可同步设置；理论上不会是 null（状态字段本身合法），null 时本次不产出设置记录
+ */
+export const loadSyncedSettings = (): SyncedSettings | null => {
+  const state = useSettings.getState()
+  return sanitizeSyncedSettings({
+    locale: state.locale,
+    themePreference: state.themePreference,
+    fontScale: state.fontScale,
+    location: state.location,
+    model: state.model,
+    reasoningEffort: state.reasoningEffort,
+    thinking: state.thinking,
+    search: state.search,
+    siderCollapsed: state.siderCollapsed,
+    syncServerUrl: state.syncServerUrl,
+  })
+}
+
+/** 用于「落地后是否真的变了」的比较串（不含 apiKey：它不参与同步） */
+const canonicalSettings = (): string => {
+  const data = loadSyncedSettings()
+  return data === null ? '' : JSON.stringify(data)
+}
+
+/**
+ * 把远端赢的设置整份落到本机。
+ *
+ * 只写白名单里的十个键（语言、主题、字号、位置、模型、推理强度、深度思考、智能搜索、
+ * 侧边栏、同步服务地址）：apiKey、syncDeviceId、syncDeviceName 与 LAN 相关键
+ * （lan-enabled / lan-key / lan-pair-tag / lan-peers）不在这份数据里，也没有对应的写操作，
+ * 远端值永远盖不到它们 —— 设备名是本机身份，尤其不能被对端改名。
+ * 落地时间写成远端那条记录的时间（不是 now）：本机这份内容确实「最后改于」那个时刻，
+ * 下次同步才不会把它当成新改动再推回去。
+ *
+ * @param data 已校验的可同步设置
+ * @param updatedAt 这条设置记录的时间
+ * @returns 内存里的设置是否真的发生了变化
+ * @sideeffect 写 localStorage 并重载 useSettings
+ */
+export const applySyncedSettings = (data: SyncedSettings, updatedAt: number): boolean => {
+  const before = canonicalSettings()
+  const location = normalizeLocation(data.location)
+  write(KEYS.locale, data.locale)
+  write(KEYS.themePreference, data.themePreference)
+  write(KEYS.fontScale, data.fontScale)
+  write(KEYS.location, location ? JSON.stringify(location) : null)
+  write(KEYS.model, data.model)
+  write(KEYS.reasoningEffort, data.reasoningEffort)
+  write(KEYS.thinking, String(data.thinking))
+  write(KEYS.search, String(data.search))
+  write(KEYS.siderCollapsed, String(data.siderCollapsed))
+  write(KEYS.syncServerUrl, data.syncServerUrl || null)
+  // 设备名不写：它不在远端记录里（白名单已排除），本机名字只由 setSyncDeviceName 改
+  write(KEYS.settingsUpdatedAt, String(Math.max(0, Math.floor(updatedAt))))
+  reloadSettingsFromStorage()
+  return canonicalSettings() !== before
+}
 
 export const setLocale = (locale: Locale) => {
   write(KEYS.locale, locale)
+  touchSettingsUpdatedAt()
   useSettings.setState({ locale })
 }
 
 export const setLocation = (value: UserLocation | null) => {
   const location = normalizeLocation(value)
   write(KEYS.location, location ? JSON.stringify(location) : null)
+  touchSettingsUpdatedAt()
   useSettings.setState({ location })
 }
 
 export const setThemePreference = (themePreference: ThemePreference) => {
   write(KEYS.themePreference, themePreference)
+  touchSettingsUpdatedAt()
   useSettings.setState({ themePreference })
 }
 
+/**
+ * 保存字号档位。
+ * 与主题一样属于可同步设置：写盘后刷新「设置最后修改时间」，
+ * 落地由 app/theme.ts 的订阅负责，这里只管状态。
+ */
+export const setFontScale = (fontScale: FontScale) => {
+  write(KEYS.fontScale, fontScale)
+  touchSettingsUpdatedAt()
+  useSettings.setState({ fontScale })
+}
+
+/**
+ * 保存 API Key。
+ * 刻意不刷新「设置最后修改时间」：apiKey 不在同步范围内，改它不该让整份设置变新，
+ * 否则只改本机 key 也会把对端的其它设置项压掉。
+ */
 export const setApiKey = (apiKey: string | null) => {
   write(KEYS.apiKey, apiKey)
   useSettings.setState({ apiKey })
@@ -241,27 +399,32 @@ export const setApiKey = (apiKey: string | null) => {
 export const setModel = (model: string) => {
   const value = model.trim() || DEFAULT_MODEL
   write(KEYS.model, value)
+  touchSettingsUpdatedAt()
   useSettings.setState({ model: value })
 }
 
 /** 只改强度档位；开关状态独立保存，关闭思考不会覆盖这里的选择 */
 export const setReasoningEffort = (reasoningEffort: ReasoningEffort) => {
   write(KEYS.reasoningEffort, reasoningEffort)
+  touchSettingsUpdatedAt()
   useSettings.setState({ reasoningEffort })
 }
 
 export const setThinking = (thinking: boolean) => {
   write(KEYS.thinking, String(thinking))
+  touchSettingsUpdatedAt()
   useSettings.setState({ thinking })
 }
 
 export const setSearch = (search: boolean) => {
   write(KEYS.search, String(search))
+  touchSettingsUpdatedAt()
   useSettings.setState({ search })
 }
 
 export const setSiderCollapsed = (siderCollapsed: boolean) => {
   write(KEYS.siderCollapsed, String(siderCollapsed))
+  touchSettingsUpdatedAt()
   useSettings.setState({ siderCollapsed })
 }
 
@@ -269,10 +432,17 @@ export const setSiderCollapsed = (siderCollapsed: boolean) => {
 export const setSyncServerUrl = (url: string) => {
   const value = url.trim()
   write(KEYS.syncServerUrl, value || null)
+  touchSettingsUpdatedAt()
   useSettings.setState({ syncServerUrl: value })
 }
 
-/** 保存设备名；清空时回退到默认名，保证列表里始终有名字可显示 */
+/**
+ * 保存设备名；清空时回退到默认名，保证列表里始终有名字可显示。
+ *
+ * 刻意不刷新「设置最后修改时间」，理由同 setApiKey：设备名不在同步范围内
+ * （见 sync/protocol.ts 的白名单），改它不该让整份设置变新，
+ * 否则只改本机名字也会把对端的其它设置项压掉。
+ */
 export const setSyncDeviceName = (name: string) => {
   const value = name.trim()
   if (!value) {

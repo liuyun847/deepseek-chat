@@ -96,9 +96,14 @@ const request = async (url: string, options: RequestOptions = {}): Promise<unkno
 export type HealthInfo = {
   name: string
   time: number
+  /** 服务端记录总数（含墓碑与设置/提示词） */
   records: number
   sessions: number
   messages: number
+  /** 服务端有没有同步过设置那一份（0 或 1） */
+  settings: number
+  /** 服务端提示词条数（活记录，不含墓碑） */
+  prompts: number
   dataFile: string
 }
 
@@ -144,6 +149,8 @@ export const fetchHealth = async (serverUrl: string): Promise<HealthInfo> => {
     records: typeof body.records === 'number' ? body.records : 0,
     sessions: typeof body.sessions === 'number' ? body.sessions : 0,
     messages: typeof body.messages === 'number' ? body.messages : 0,
+    settings: typeof body.settings === 'number' ? body.settings : 0,
+    prompts: typeof body.prompts === 'number' ? body.prompts : 0,
     dataFile: typeof body.dataFile === 'string' ? body.dataFile : '',
   }
 }

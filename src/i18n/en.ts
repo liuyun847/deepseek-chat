@@ -109,6 +109,17 @@ export const en = {
   confirm: 'Confirm',
   apiKeyInvalid: 'Invalid API Key. Please check it and try again.',
   apiKeyVerificationFailed: 'Verification failed: {message}',
+  apiKeyLocalService: 'API Key is provided by the local service',
+  apiKeyLocalServiceNote:
+    'Injected on the server; the browser never stores it. To change it, edit .secrets\\api-key.txt and restart the service.',
+  localServiceOffline:
+    'Cannot reach the local service — it may have stopped. Run local-server\\start.ps1, then reload this page.',
+  localServiceNoKey:
+    'The local service has no API Key yet. Put the key in .secrets\\api-key.txt or set DS_API_KEY, then restart the service.',
+  localServiceKeyRejected:
+    'The API Key configured on the local service was rejected (401). Update .secrets\\api-key.txt, then restart the service.',
+  localServiceBakedKeyWarning:
+    'This page carries a built-in API Key — use it on your own machine only. To expose it to others, rebuild with pnpm build:web.',
   historyImport: 'Import chat history',
   historyImportConfirm: 'Import',
   historyImportConfirmTitle: 'Import chat history?',
@@ -171,6 +182,10 @@ export const en = {
   settingsReasoningEffortHigh: 'High',
   settingsReasoningEffortMax: 'Max',
   settingsReasoningEffortOff: 'DeepThink is off. Turn it on to choose reasoning effort.',
+  settingsFontScale: 'Font size',
+  settingsFontScaleSmall: 'Small',
+  settingsFontScaleNormal: 'Standard',
+  settingsFontScaleLarge: 'Large',
   chatControlsModel: 'Model',
   chatControlsEffort: 'Effort',
   settingDialogAsidePromptOptionLabel: 'System prompts',
@@ -200,7 +215,7 @@ export const en = {
     'Address of the machine running sync-server. For other devices on the LAN, use that machine IP and port.',
   syncTest: 'Test connection',
   syncTesting: 'Testing...',
-  syncTestOk: 'Connected: {name} — {sessions} chats, {messages} messages on the server',
+  syncTestOk: 'Connected: {name} — {sessions} chats, {messages} messages, {prompts} prompts on the server',
   syncTestFailed: 'Connection failed: {message}',
   syncDeviceLabel: 'Device name',
   syncDeviceDescription: 'Only used to tell this device apart in the UI; it does not affect conflicts.',
@@ -210,14 +225,14 @@ export const en = {
   syncLastOk: 'Last sync: {time} — pushed {pushed}, pulled {pulled}, wrote {applied} chats',
   syncLastFailed: 'Last sync failed ({time}): {message}',
   syncDescription:
-    'Syncs chats and messages record by record, keeping records unique to either side. Deletions travel as deletion markers, so deleted chats are not pulled back.',
+    'Syncs chats and messages record by record (records unique to either side are kept; deletions travel as tombstones). Settings sync as one whole record — the newest copy wins. Prompts sync one by one, including which one is selected. Your API key, device ID, device name and phone-to-phone passphrase stay on this device only.',
   syncAttachmentsNote: 'Attachments sync file details only (name, size, type), not the file itself.',
   syncNeedsServer: 'Enter the sync server URL first, then test or sync',
   syncFirstConfirmTitle: 'Confirm first sync',
   syncFirstConfirmSummary:
     'The server has {remoteSessions} chats and {remoteMessages} messages; this device has {localSessions} chats and {localMessages} messages.',
   syncFirstConfirmMerge:
-    'Sync merges chat by chat and message by message — it never replaces one side wholesale. Records unique to either side are kept; when the same record changed on both sides, the latest edit wins.',
+    'Sync merges chat by chat and message by message — it never replaces one side wholesale. Records unique to either side are kept; when the same record changed on both sides, the latest edit wins. Settings are one whole record (the latest copy wins); prompts merge one by one.',
   syncFirstConfirmTombstone:
     'Chats deleted on this device are synced with a deletion marker and will not be pulled back.',
   syncFirstConfirmStart: 'Start sync',

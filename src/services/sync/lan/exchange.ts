@@ -1,6 +1,7 @@
 import * as db from '../../chat/db.js'
 import type { Session } from '../../chat/types.js'
 import { useChatStore, flushChatStorage, reloadChatFromStorage } from '../../chat/store.js'
+import { applyPulledLocalRecords, readLocalSyncExtras } from '../local.js'
 import { applyPulledRecords, buildLocalRecords, recordsToSnapshots } from '../merge.js'
 import type { SyncRecord } from '../protocol.js'
 import { loadSnapshots, saveSnapshots } from '../snapshots.js'
@@ -32,7 +33,14 @@ export const readLocalState = async (device: string): Promise<LocalState> => {
   await flushChatStorage()
   const sessions = await db.loadAllSessions()
   const snapshots = await loadSnapshots()
-  const built = buildLocalRecords({ sessions, snapshots, device, now: Date.now() })
+  // 设置 / 提示词 / 选中项存在 localStorage：与 HTTP 通道读的是同一份（见 local.ts）
+  const built = buildLocalRecords({
+    sessions,
+    snapshots,
+    device,
+    now: Date.now(),
+    ...readLocalSyncExtras(),
+  })
   return { sessions, records: built.records }
 }
 
@@ -60,11 +68,16 @@ const commit = async (
   for (const id of applied.removed) {
     await db.deleteSession(id)
   }
+  // 非会话记录（设置 / 提示词 / 选中项）落到 localStorage，并让两个 store 立刻反映
+  const extras = applyPulledLocalRecords(pulled)
   await saveSnapshots(recordsToSnapshots(merged.values()))
   if (applied.upserts.length > 0 || applied.removed.length > 0) {
     await reloadChatFromStorage()
   }
-  return { applied: applied.upserts.length + applied.removed.length, pulled: pulled.length }
+  return {
+    applied: applied.upserts.length + applied.removed.length + extras,
+    pulled: pulled.length,
+  }
 }
 
 /** 应答方：合并对方发来的记录，返回要回给对方的差异 */

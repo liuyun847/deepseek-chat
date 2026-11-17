@@ -136,7 +136,7 @@ export const SystemPromptSettings = () => {
           {t('systemPromptSearchEmpty')}
         </div>
       ) : (
-        <ul className={styles.promptList}>
+        <ul className={styles.promptList} role="radiogroup">
           {visible.map((prompt) => (
             <li
               key={prompt.id}
@@ -145,6 +145,21 @@ export const SystemPromptSettings = () => {
                 styles.promptItem,
                 prompt.id === activeId && styles.promptItemActive
               )}
+              role="radio"
+              aria-checked={prompt.id === activeId}
+              tabIndex={0}
+              onClick={() => selectSystemPrompt(prompt.id)}
+              onKeyDown={(event) => {
+                // 按键事件来自卡片内部的编辑/删除按钮时交给按钮自己处理，避免顺带切换选中
+                if (event.target !== event.currentTarget) {
+                  return
+                }
+                if (event.key === 'Enter' || event.key === ' ') {
+                  // Space 默认会滚动页面，选中由本卡片接管
+                  event.preventDefault()
+                  selectSystemPrompt(prompt.id)
+                }
+              }}
             >
               <div className={styles.promptHead}>
                 <span className={styles.promptName}>{nameOf(prompt)}</span>
@@ -162,13 +177,19 @@ export const SystemPromptSettings = () => {
                       size="m"
                       icon={<IconEditOutline16 />}
                       tooltip={t('systemPromptEditFor', { name: prompt.name })}
-                      onClick={() => setDraft(prompt)}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setDraft(prompt)
+                      }}
                     />
                     <IconButton
                       size="m"
                       icon={<IconTrashOutline16 />}
                       tooltip={t('systemPromptDeleteFor', { name: prompt.name })}
-                      onClick={() => setDeleting(prompt)}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setDeleting(prompt)
+                      }}
                     />
                   </span>
                 )}

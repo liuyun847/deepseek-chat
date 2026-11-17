@@ -18,6 +18,7 @@ import {
   planMerge,
   recordsToSnapshots,
 } from './merge.js'
+import { applyPulledLocalRecords, readLocalSyncExtras } from './local.js'
 import { compareRecords, MAX_SYNC_BYTES, recordKey, type SyncRecord } from './protocol.js'
 import { loadLastSync, loadSnapshots, saveLastSync, saveSnapshots, type LastSyncInfo } from './snapshots.js'
 
@@ -49,7 +50,11 @@ export type FirstSyncPreview = {
   localMessages: number
 }
 
-/** 数一遍活记录（墓碑不计入） */
+/**
+ * 数一遍活记录（墓碑不计入）。
+ * 只数会话与消息：设置、提示词、选中项的条数与「首次同步会不会覆盖我的聊天」无关，
+ * 混进 messages 会让首次同步的确认框显示一个莫名其妙的大数字。
+ */
 const countAlive = (records: SyncRecord[]) => {
   let sessions = 0
   let messages = 0
@@ -59,7 +64,7 @@ const countAlive = (records: SyncRecord[]) => {
     }
     if (record.kind === 'session') {
       sessions += 1
-    } else {
+    } else if (record.kind === 'message') {
       messages += 1
     }
   }
@@ -144,7 +149,14 @@ export const runSync = async (): Promise<LastSyncInfo> => {
     await flushChatStorage()
     const sessions = await db.loadAllSessions()
     const snapshots = await loadSnapshots()
-    const built = buildLocalRecords({ sessions, snapshots, device, now: Date.now() })
+    // 设置 / 提示词 / 选中项存在 localStorage：一并读进记录表（同一个合并计划）
+    const built = buildLocalRecords({
+      sessions,
+      snapshots,
+      device,
+      now: Date.now(),
+      ...readLocalSyncExtras(),
+    })
 
     const remoteRecords = await fetchState(server)
     const remote = new Map(remoteRecords.map((record) => [recordKey(record.kind, record.id), record]))
@@ -184,6 +196,8 @@ export const runSync = async (): Promise<LastSyncInfo> => {
     for (const id of applied.removed) {
       await db.deleteSession(id)
     }
+    // 非会话记录（设置 / 提示词 / 选中项）落到 localStorage，并让两个 store 立刻反映
+    applyPulledLocalRecords(pulled)
     await saveSnapshots(recordsToSnapshots(finalRecords.values()))
     if (applied.upserts.length > 0 || applied.removed.length > 0) {
       await reloadChatFromStorage()
