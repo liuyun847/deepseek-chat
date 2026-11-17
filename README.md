@@ -55,7 +55,9 @@ node sync-server/server.mjs --port 7788
 
 It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-data.json`. For other devices on the LAN, start it with `--host 0.0.0.0` and enter this machine's IP in the client. In the client, open Settings → Multi-device sync, fill in the server URL (for example `http://127.0.0.1:7788`) and device name, then "Test connection" → "Sync now".
 
-Sync is record-granular (chat, message) last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
+Sync is record-granular last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself.
+
+Five record kinds are synced: `session`, `message`, `settings` (the whole device-agnostic settings object as one record — the newest copy wins), `prompt` (one record per system prompt, deletions as tombstones) and `prompt-selection` (which prompt is active, one record; a remote selection pointing at a prompt this device does not have falls back to the default until it arrives). Your **API key, device id, device name and the phone-to-phone passphrase are never synced** — they stay on each device, and incoming settings can never overwrite them. Protocol version is **2**; a v1 client refuses to sync against a v2 server, and a v2 client gets a 400 from a v1 server (upgrade both sides together). Old data files containing only sessions and messages load unchanged. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
 
 ## Phone-to-phone (LAN P2P, no server)
 
@@ -86,6 +88,26 @@ With only one phone, Settings → Phone-to-phone → "Self test" sends a ping an
 
 Limits (stated up front): this only works inside one subnet — guest Wi-Fi and AP isolation block broadcasts. For cross-subnet or relayed setups keep using the HTTP sync above.
 
+## Local web service (browser access + autostart)
+
+`local-server/` is a zero-dependency Node service (built-in modules only) that does two things: it serves `dist/` to the browser, and it reverse-proxies `/anthropic/*` and `/models` to `https://api.deepseek.com`. **The API key lives only on the server** — not a single byte of it ends up in the browser bundle.
+
+```powershell
+pnpm --config.shell-emulator=true build:web   # frontend build WITHOUT the baked key -> dist/
+.\local-server\start.ps1                      # start; exits 0 only after /api/health passes
+.\local-server\stop.ps1                       # stop by port, idempotent
+```
+
+Open <http://127.0.0.1:7789/> (change the port with the `PORT` environment variable).
+
+- Port 7789, loopback only. A non-loopback `HOST` (say `0.0.0.0`) is refused at startup: this service lends the server-side key to the page, so exposing it to the LAN means handing that key to every device on the network — that needs a passphrase/auth mechanism first, which is out of scope for now.
+- Key source: `DS_API_KEY` wins, then `.secrets\api-key.txt` (single line, git-ignored). With neither, the service still starts, static pages work, and proxy routes answer 503 with instructions; `GET /api/health` only reports `keyConfigured: true/false` and never echoes the key.
+- Why the key is not in the frontend: `dist/` is plain static content, so whoever fetches the JS gets the key. The web build therefore stops sending credentials: `src/services/localService.ts` probes `GET /api/health` on startup, and on a hit switches to relative `/anthropic/...` paths while the server injects `x-api-key`. In the APK (`https://dsapp.local`) and under `file://` the probe is false, so behaviour is unchanged — no second build flavor needed.
+- Cross-site protection: proxy routes check `Origin` (present and different from this service → 403, which stops any web page from spending your key through `127.0.0.1`) and `Host` (loopback only, which blocks DNS rebinding); request bodies are capped at 20 MB (413 beyond that).
+- Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-web.vbs` runs `local-server\start.ps1` through a windowless Windows PowerShell 5.1 (same pattern as `dsh-desktop-autostart.vbs`: two log files, rename to disable). To turn it off, rename the file to `.vbs.disabled`. Logs live in `local-server\logs\`: `start.log` (start/stop results) and `server.log` (service log, rotated at 2 MB).
+- Serving a default (`build`, key-baked) artifact shows a dismissible yellow banner at the top of the page: "This page carries a built-in API Key — use it on your own machine only", because that artifact hands the key to anyone who can open the page. `build:web` artifacts show no banner.
+- ⚠ The `dist/` produced by `build:web` has **no key** in it. Rebuild with the default `pnpm --config.shell-emulator=true build` before packaging an APK — step 0 of `tools\build-apk.ps1` blocks a keyless artifact and prints exactly that command (you never get a silently keyless APK).
+
 ## Android APK
 
 The repo can also be packaged as an installable APK: the same `dist/` output is embedded in the APK's assets and served to a WebView from a virtual `https://dsapp.local` origin (a real secure origin, so localStorage and IndexedDB work). No Gradle, no Maven — the chain is aapt2 → javac → d8 → jar → zipalign → apksigner, driven by `tools/build-apk.ps1` (Windows, PowerShell 7).
@@ -98,7 +120,7 @@ pnpm --config.shell-emulator=true build       # frontend -> dist/
 adb install -r dist-apk\deepseek-chat.apk
 ```
 
-- The API key can be **baked in at build time** from a local secret file: put the key in `.secrets/api-key.txt` (single line, git-ignored) and the next `pnpm build` injects it into the main bundle — the APK and the static site then work right after installing/opening, with no setup. Without that file the build falls back to the original flow: enter the key in Settings, where it is stored in localStorage of the app origin. A key entered in Settings always wins over the built-in one, and `tools\verify-apk.ps1` checks the packaged key against the secret file (fingerprint only, never the key itself).
+- The API key can be **baked in at build time** from a local secret file: put the key in `.secrets/api-key.txt` (single line, git-ignored) and the next `pnpm build` injects it into the main bundle — the APK and the static site then work right after installing/opening, with no setup. Without that file the build falls back to the original flow: enter the key in Settings, where it is stored in localStorage of the app origin. A key entered in Settings always wins over the built-in one, and `tools\verify-apk.ps1` checks the packaged key against the secret file (fingerprint only, never the key itself). **`build:web`, used by the local web service, deliberately injects no key** (see the section above) — package APKs from the default `pnpm build`.
 - Package name stays `ds.app` and the signing key is `android\debug.keystore` (git-ignored), so a new APK can be installed **over** an existing install. Lose that keystore and you must uninstall first, which wipes local chats.
 - `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.3.0 → 300). Bump `package.json` before shipping.
 - `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), only two permissions: `INTERNET` and `CHANGE_WIFI_MULTICAST_STATE` (the multicast lock used by phone-to-phone discovery; normal level, granted at install).
@@ -111,6 +133,7 @@ adb install -r dist-apk\deepseek-chat.apk
 | ------------- | ---------------------------- |
 | `pnpm dev`    | Start the development server |
 | `pnpm build`  | Build into `dist/`           |
+| `pnpm build:web` | Build into `dist/` without the baked key (local web service) |
 | `pnpm type`   | Run TypeScript type checks   |
 | `pnpm lint`   | Lint with oxlint             |
 | `pnpm format` | Format with oxfmt            |
@@ -128,7 +151,8 @@ src/
     api/               API requests, SSE, and protocol types
     chat/              Conversations, message branches, storage, and history import/export
     markdown/          Markdown parsing, syntax highlighting, and diagrams
-    sync/              Multi-device sync (HTTP channel + phone-to-phone LAN P2P)
+    sync/              Multi-device sync (HTTP channel + phone-to-phone LAN P2P);
+                       settings / prompts / prompt-selection live in sync/local.ts
   utils/               Shared utilities
 ```
 

@@ -55,7 +55,9 @@ node sync-server/server.mjs --port 7788
 
 默认只监听 `127.0.0.1`，数据写在 `sync-server/data/sync-data.json`；局域网内其它设备要连时用 `--host 0.0.0.0`，并把本机 IP 填进客户端。客户端在 设置 → 多端同步 里填服务地址（例如 `http://127.0.0.1:7788`）、设备名，然后「测试连接」→「立即同步」。
 
-同步按记录（会话、消息）粒度做 LWW：两边独有的记录都会保留，同一条记录两端都改过时保留最后修改的那一版；删除用墓碑同步，不会被另一端拉回来；分支树字段（`parentId` / `selectedChildId` / `rootMessageId`）原样同步。附件只同步文件信息，不含原件。接口与冲突规则见 [sync-server/README.md](sync-server/README.md)。
+同步按记录粒度做 LWW：两边独有的记录都会保留，同一条记录两端都改过时保留最后修改的那一版；删除用墓碑同步，不会被另一端拉回来；分支树字段（`parentId` / `selectedChildId` / `rootMessageId`）原样同步。附件只同步文件信息，不含原件。
+
+同步的记录共五种：`session`、`message`、`settings`（除 API Key 外的设置整份一条，最新的整份覆盖旧的）、`prompt`（提示词逐条一条记录，删除走墓碑）、`prompt-selection`（当前选中的提示词，一条记录；远端选中的 id 在本机还不存在时先回落默认，等它同步过来自动生效）。**API Key、设备 id、设备名、手机直连的口令永远不同步**，只留在各设备本机，远端记录也盖不到它们。协议版本为 **2**：v1 客户端连 v2 服务端会拒绝同步，v2 客户端连 v1 服务端会收到 400（两边一起升级）。只有会话与消息的老数据文件可以直接用。接口与冲突规则见 [sync-server/README.md](sync-server/README.md)。
 
 ## 手机直连（局域网 P2P，无需服务器）
 
@@ -86,6 +88,26 @@ lan/engine.ts          编排：发现表、自动同步、节流、自检
 
 限制（明确说明）：只在同一网段内有效，访客网络/AP 隔离会挡掉广播；跨网段、需要中转的场景请继续用下面的 HTTP 同步。
 
+## 本机 Web 服务（浏览器访问 + 开机自启）
+
+`local-server/` 是一个零依赖的 Node 服务（只用内置模块），做两件事：把 `dist/` 静态托管给浏览器，把 `/anthropic/*` 与 `/models` 反向代理到 `https://api.deepseek.com`。**API key 只存在服务端**，浏览器产物里一个字都没有。
+
+```powershell
+pnpm --config.shell-emulator=true build:web   # 构建不含内置 key 的前端产物 -> dist/
+.\local-server\start.ps1                      # 启动：/api/health 自检通过才返回 0
+.\local-server\stop.ps1                       # 停止：按端口找 PID，幂等
+```
+
+浏览器打开 <http://127.0.0.1:7789/>（端口可用 `PORT` 环境变量改）。
+
+- 端口 7789，只监听 `127.0.0.1`。`HOST=0.0.0.0` 之类的非回环地址会被直接拒绝启动：本服务把服务端的 key 借给页面用，对局域网开放等于把 key 交给同网段的任何设备，要这么用必须先有口令/鉴权机制（本期没做）。
+- key 来源：环境变量 `DS_API_KEY` 优先，其次 `.secrets\api-key.txt`（单行，已被 .gitignore 忽略）。两处都没有时服务照常启动，静态页面能开，代理路由返回 503 并说明怎么配；`GET /api/health` 里只有 `keyConfigured: true/false`，不回显 key。
+- 为什么 key 不进前端：`dist/` 是明文静态资源，谁拿到 JS 谁就拿到 key。所以网页版改成「浏览器不带鉴权头，服务端注入 `x-api-key`」：`src/services/localService.ts` 启动时探测 `GET /api/health`，命中就改用相对路径 `/anthropic/...`；APK（`https://dsapp.local`）与 `file://` 下探测直接为 false，行为与以前一致，不需要第二套构建产物。
+- 跨站防护：代理路由校验 `Origin`（存在且与本服务不同源 → 403，挡「任意网页借 127.0.0.1 白嫖 key」）与 `Host`（只认回环，挡 DNS rebinding）；请求体上限 20 MB，超限 413。
+- 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-web.vbs` 用无窗口的 Windows PowerShell 5.1 调 `local-server\start.ps1`（与 `dsh-desktop-autostart.vbs` 同一套范式：双日志、改扩展名即禁用）。关掉自启就把该文件改名成 `.vbs.disabled`。日志在 `local-server\logs\`：`start.log`（启停结果）、`server.log`（服务日志，2 MB 轮转）。
+- 用默认 `build`（带 key）的产物起服务时，页面顶部会出现一条可关闭的黄色提示条「当前页面携带内置 API Key，仅建议本机自用」——提醒这份产物把 key 发给每个能打开页面的人；`build:web` 的产物没有这条。
+- ⚠ `build:web` 产出的 `dist/` **不含 key**。打 APK 前必须用默认的 `pnpm --config.shell-emulator=true build` 重新构建，否则 `tools\build-apk.ps1` 第 0 步会拦住并提示这条命令（不会静默打出一个没 key 的包）。
+
 ## 安卓 APK
 
 同一份 `dist/` 也可以打成可安装的 APK：前端资源放进 APK 的 assets，由 WebView 以虚拟源 `https://dsapp.local` 供给（真正的安全源，localStorage 与 IndexedDB 都可用）。零 Gradle、零 Maven，链路是 aapt2 → javac → d8 → jar → zipalign → apksigner，由 `tools/build-apk.ps1` 驱动（Windows，PowerShell 7）。
@@ -98,7 +120,7 @@ pnpm --config.shell-emulator=true build       # 前端 -> dist/
 adb install -r dist-apk\deepseek-chat.apk
 ```
 
-- API Key **可以在构建期写入产物**：把 key 放进 `.secrets/api-key.txt`（单行，已被 .gitignore 忽略），下一次 `pnpm build` 会把它注入主包 —— 这样 APK 与网页版装好/打开即可用，不必先配置。没有该文件时构建回退到原流程：在设置里填，存在应用源的 localStorage 里。设置里手填的 key 始终优先于内置值，`tools\verify-apk.ps1` 会把包里的 key 与密钥文件比对（日志只打指纹，不打 key 本身）。
+- API Key **可以在构建期写入产物**：把 key 放进 `.secrets/api-key.txt`（单行，已被 .gitignore 忽略），下一次 `pnpm build` 会把它注入主包 —— 这样 APK 与网页版装好/打开即可用，不必先配置。没有该文件时构建回退到原流程：在设置里填，存在应用源的 localStorage 里。设置里手填的 key 始终优先于内置值，`tools\verify-apk.ps1` 会把包里的 key 与密钥文件比对（日志只打指纹，不打 key 本身）。**本机 Web 服务用的 `build:web` 刻意不注入 key**（见上一节），打 APK 时要用默认的 `pnpm build`。
 - 包名沿用 `ds.app`，签名私钥是 `android\debug.keystore`（已 gitignore），因此新包能**覆盖升级**已装版本。丢了这份私钥就只能先卸载，本地聊天记录会一起丢。
 - `versionName` 取自 `package.json`；`versionCode` 按 `major*10000 + minor*100 + patch` 折算（0.3.0 → 300）。发版前先改 `package.json`。
 - `minSdk 26`、`targetSdk 34`（升到 35 会被 Android 15 强制 edge-to-edge），权限只有 `INTERNET` 与 `CHANGE_WIFI_MULTICAST_STATE` 两条（后者是手机直连收广播用的组播锁，normal 级，安装即授予）。
@@ -111,6 +133,7 @@ adb install -r dist-apk\deepseek-chat.apk
 | ------------- | ------------------- |
 | `pnpm dev`    | 启动开发服务器      |
 | `pnpm build`  | 构建到 `dist/`      |
+| `pnpm build:web` | 构建到 `dist/`，不含内置 key（本机 Web 服务用） |
 | `pnpm type`   | TypeScript 类型检查 |
 | `pnpm lint`   | oxlint 检查         |
 | `pnpm format` | oxfmt 格式化        |
@@ -128,7 +151,8 @@ src/
     api/               API 请求、SSE 与协议类型
     chat/              会话、消息分支、本地存储与历史导入导出
     markdown/          Markdown 解析、代码高亮与图表
-    sync/              多端同步（HTTP 通道 + 手机直连局域网 P2P）
+    sync/              多端同步（HTTP 通道 + 手机直连局域网 P2P）；
+                       设置 / 提示词 / 选中项的落地在 sync/local.ts
   utils/               通用工具
 ```
 
