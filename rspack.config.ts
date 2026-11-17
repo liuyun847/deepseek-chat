@@ -42,12 +42,24 @@ const readBuiltinApiKey = (): string => {
 const keyFingerprint = (key: string): string =>
   `${key.slice(0, 4)}…，长度 ${key.length}，sha256 ${createHash('sha256').update(key).digest('hex').slice(0, 8)}`
 
-const builtinApiKey = readBuiltinApiKey()
+/**
+ * 是否把密钥注入产物。
+ *
+ * 默认注入：APK 与「直接打开 dist/index.html」都靠产物自带 key 开箱可用，
+ * tools\build-apk.ps1 的第 0 步也在核对它。
+ * 由本机 Web 服务（local-server/）托管时用 `pnpm build:web`（DS_INLINE_KEY=0）：
+ * 那种场景 key 只留在服务端，网页产物里出现明文 key 就是泄露 —— 浏览器拿到 JS 就拿到了它。
+ */
+const inlineApiKey = process.env.DS_INLINE_KEY !== '0'
+
+const builtinApiKey = inlineApiKey ? readBuiltinApiKey() : ''
 // 用 process.stdout 而不是 console：本文件在 oxlint 的 no-console 规则覆盖范围内
 process.stdout.write(
   builtinApiKey
     ? `[build] 已注入内置 API key（${keyFingerprint(builtinApiKey)}）\n`
-    : `[build] 未找到 ${SECRET_FILE}，产物不含内置 key：在设置里手动填\n`
+    : inlineApiKey
+      ? `[build] 未找到 ${SECRET_FILE}，产物不含内置 key：在设置里手动填\n`
+      : '[build] DS_INLINE_KEY=0：产物不含内置 key（给本机 Web 服务托管用）\n'
 )
 
 const cssLoader = {
