@@ -48,14 +48,16 @@ const Row = ({
   description,
   status,
   action,
+  className,
 }: {
   label: string
   htmlFor?: string
   description?: string
   status?: Status
   action: ReactNode
+  className?: string
 }) => (
-  <div className={clsx(styles.cell, styles.row)}>
+  <div className={clsx(styles.cell, styles.row, className)}>
     <div className={styles.text}>
       <div className={styles.label}>
         {htmlFor ? <label htmlFor={htmlFor}>{label}</label> : label}
@@ -451,6 +453,7 @@ export const SyncSettings = () => {
         }
       />
       <Row
+        className={syncStyles.groupRow}
         label={t('syncGroupLabel')}
         description={
           group ? `${group.groupName} · ${group.groupId}` : t('syncGroupDescription')

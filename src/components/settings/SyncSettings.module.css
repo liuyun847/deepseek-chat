@@ -149,3 +149,31 @@
   text-align: right;
 }
 
+@media not all and (min-width: 768px) {
+  .groupRow {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .groupRow > div:first-child {
+    flex-basis: 100%;
+    padding-right: 0;
+  }
+
+  .groupPanel {
+    align-items: stretch;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .groupMeta,
+  .hint {
+    text-align: left;
+    justify-content: flex-start;
+  }
+
+  .field {
+    justify-content: flex-start;
+  }
+}
+
