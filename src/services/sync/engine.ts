@@ -3,8 +3,9 @@ import type { TranslationKey } from '../../i18n/index.js'
 import { localServiceReady } from '../localService.js'
 import * as db from '../chat/db.js'
 import { flushChatStorage, reloadChatFromStorage, useChatStore } from '../chat/store.js'
-import { useSettings } from '../settings.js'
+import { saveSyncGroup, useSettings } from '../settings.js'
 import {
+  fetchGroup,
   fetchHealth,
   fetchState,
   pushRecords,
@@ -104,7 +105,7 @@ export const testConnection = async (): Promise<HealthInfo> => {
   const server = await resolveServer()
   useSync.setState({ busy: 'test' })
   try {
-    return await fetchHealth(server)
+    return await fetchHealth(server, useSettings.getState().syncGroupToken || undefined)
   } finally {
     useSync.setState({ busy: null })
   }
@@ -119,7 +120,9 @@ export const prepareFirstSync = async (): Promise<FirstSyncPreview | null> => {
   if (await loadLastSync()) {
     return null
   }
-  const remote = countAlive(await fetchState(server))
+  const remote = countAlive(
+    await fetchState(server, useSettings.getState().syncGroupToken || undefined)
+  )
   if (remote.sessions === 0 && remote.messages === 0) {
     return null
   }
@@ -154,12 +157,30 @@ export const runSync = async (): Promise<LastSyncInfo> => {
     throw new SyncError('syncErrorStreaming')
   }
   const server = await resolveServer()
-  const device = useSettings.getState().syncDeviceId
+  const {
+    syncDeviceId: device,
+    syncGroupId,
+    syncGroupToken: token,
+    syncGroupEpoch,
+  } = useSettings.getState()
   useSync.setState({ busy: 'sync' })
   const at = Date.now()
   try {
     // 界面改的是内存缓存，同步读的是 IndexedDB，先落盘
     await flushChatStorage()
+    // 组的主机/epoch 可能已被其它设备改过：同步前先拉一次，避免带着旧 epoch 推送
+    let epoch = syncGroupEpoch
+    if (syncGroupId) {
+      try {
+        const info = await fetchGroup(server)
+        if (info) {
+          saveSyncGroup(info)
+          epoch = info.epoch
+        }
+      } catch {
+        // 组信息拉取失败不阻塞同步；真过期时下面按 409 再刷新一次
+      }
+    }
     const sessions = await db.loadAllSessions()
     const snapshots = await loadSnapshots()
     // 设置 / 提示词 / 选中项存在 localStorage：一并读进记录表（同一个合并计划）
@@ -171,7 +192,7 @@ export const runSync = async (): Promise<LastSyncInfo> => {
       ...readLocalSyncExtras(),
     })
 
-    const remoteRecords = await fetchState(server)
+    const remoteRecords = await fetchState(server, token || undefined)
     const remote = new Map(remoteRecords.map((record) => [recordKey(record.kind, record.id), record]))
     const plan = planMerge(built.records, remote)
     if (estimatedBytes(plan.push) > MAX_SYNC_BYTES) {
@@ -179,7 +200,22 @@ export const runSync = async (): Promise<LastSyncInfo> => {
     }
 
     // 服务端返回的是「合并后的权威全量」，本地只推自己胜出的那部分
-    const result = await pushRecords(server, device, plan.push)
+    let result
+    try {
+      result = await pushRecords(server, device, plan.push, token || undefined, epoch || undefined)
+    } catch (error) {
+      // epoch 过期：刷新组信息后重试一次
+      if (error instanceof SyncError && error.status === 409 && syncGroupId) {
+        const info = await fetchGroup(server)
+        if (!info) {
+          throw error
+        }
+        saveSyncGroup(info)
+        result = await pushRecords(server, device, plan.push, token || undefined, info.epoch)
+      } else {
+        throw error
+      }
+    }
     const finalRecords = new Map(result.records.map((record) => [recordKey(record.kind, record.id), record]))
     for (const [key, record] of built.records) {
       // 理论上服务端一定有这些记录（刚推上去的），兜底防止一次失败把本地记录丢了

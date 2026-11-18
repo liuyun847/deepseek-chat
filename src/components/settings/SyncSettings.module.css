@@ -60,3 +60,92 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* 组信息面板：成员、配对码与主机操作都收在这一列里 */
+.groupPanel {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  min-width: 260px;
+  max-width: 100%;
+}
+
+.groupMeta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 12px;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.memberList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-width: 360px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  list-style: none;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
+}
+
+.memberName {
+  overflow: hidden;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.badge {
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-brand-text);
+  font-size: var(--ds-fs-11);
+  line-height: var(--ds-lh-16);
+}
+
+.memberRemove {
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--dsw-alias-state-error-primary);
+  font: inherit;
+  font-size: var(--ds-fs-12);
+  cursor: pointer;
+}
+
+.invite {
+  width: 100%;
+  max-width: 360px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-brand-text);
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
+  word-break: break-all;
+}
+
+.hint {
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
+  color: var(--dsw-alias-label-caption);
+  text-align: right;
+}
+

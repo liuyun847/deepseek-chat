@@ -73,6 +73,16 @@ type Settings = {
   syncDeviceName: string
   /** 设备 id：首次启动生成并固定，冲突时用于 tie-break，用户不可改 */
   syncDeviceId: string
+  /** 组 ID / 组名；空串表示还没加入组 */
+  syncGroupId: string
+  syncGroupName: string
+  /** 本机在组里的设备令牌；只在创建/加入时拿到一次 */
+  syncGroupToken: string
+  /** 当前主机设备 id 与组 epoch；换主机后由服务端返回 */
+  syncGroupHostId: string
+  syncGroupEpoch: number
+  /** 本机是否声明可以当主机（手机为 false） */
+  syncGroupCanHost: boolean
 }
 
 const KEYS = {
@@ -89,6 +99,12 @@ const KEYS = {
   syncServerUrl: 'chat-demo:sync-server',
   syncDeviceName: 'chat-demo:sync-device-name',
   syncDeviceId: 'chat-demo:sync-device-id',
+  syncGroupId: 'chat-demo:sync-group-id',
+  syncGroupName: 'chat-demo:sync-group-name',
+  syncGroupToken: 'chat-demo:sync-group-token',
+  syncGroupHostId: 'chat-demo:sync-group-host-id',
+  syncGroupEpoch: 'chat-demo:sync-group-epoch',
+  syncGroupCanHost: 'chat-demo:sync-group-can-host',
   /** 设置的「最后修改时间」（毫秒），多端同步用它做整份 LWW 的时间戳 */
   settingsUpdatedAt: 'chat-demo:settings-updated-at',
 } as const
@@ -257,6 +273,12 @@ const readSettings = (): Settings => ({
   syncServerUrl: read(KEYS.syncServerUrl)?.trim() ?? '',
   syncDeviceName: initialSyncDeviceName(),
   syncDeviceId: initialSyncDeviceId(),
+  syncGroupId: read(KEYS.syncGroupId)?.trim() ?? '',
+  syncGroupName: read(KEYS.syncGroupName)?.trim() ?? '',
+  syncGroupToken: read(KEYS.syncGroupToken)?.trim() ?? '',
+  syncGroupHostId: read(KEYS.syncGroupHostId)?.trim() ?? '',
+  syncGroupEpoch: Math.max(0, Math.floor(Number(read(KEYS.syncGroupEpoch)) || 0)),
+  syncGroupCanHost: read(KEYS.syncGroupCanHost) === 'true',
 })
 
 export const useSettings = create<Settings>(() => readSettings())
@@ -434,6 +456,63 @@ export const setSyncServerUrl = (url: string) => {
   write(KEYS.syncServerUrl, value || null)
   touchSettingsUpdatedAt()
   useSettings.setState({ syncServerUrl: value })
+}
+
+/** 组信息的最小形状；避免 settings 反向依赖 sync/api */
+export type SyncGroupState = {
+  groupId: string
+  groupName: string
+  hostDeviceId: string
+  epoch: number
+}
+
+/**
+ * 落地一次组状态（创建、加入、换主机后调用）。
+ *
+ * @param group 服务端返回的组状态
+ * @param token 新设备令牌；只在创建/加入时传，换主机时省略
+ */
+export const saveSyncGroup = (group: SyncGroupState, token?: string) => {
+  write(KEYS.syncGroupId, group.groupId)
+  write(KEYS.syncGroupName, group.groupName)
+  write(KEYS.syncGroupHostId, group.hostDeviceId)
+  write(KEYS.syncGroupEpoch, String(group.epoch))
+  if (token) {
+    write(KEYS.syncGroupToken, token)
+  }
+  useSettings.setState({
+    syncGroupId: group.groupId,
+    syncGroupName: group.groupName,
+    syncGroupHostId: group.hostDeviceId,
+    syncGroupEpoch: group.epoch,
+    ...(token ? { syncGroupToken: token } : {}),
+  })
+}
+
+/** 退出组：清掉组 ID、令牌与主机信息；服务地址保留 */
+export const clearSyncGroup = () => {
+  for (const key of [
+    KEYS.syncGroupId,
+    KEYS.syncGroupName,
+    KEYS.syncGroupToken,
+    KEYS.syncGroupHostId,
+    KEYS.syncGroupEpoch,
+  ]) {
+    write(key, null)
+  }
+  useSettings.setState({
+    syncGroupId: '',
+    syncGroupName: '',
+    syncGroupToken: '',
+    syncGroupHostId: '',
+    syncGroupEpoch: 0,
+  })
+}
+
+/** 本机是否可当主机；手机端为 false */
+export const setSyncGroupCanHost = (value: boolean) => {
+  write(KEYS.syncGroupCanHost, String(value))
+  useSettings.setState({ syncGroupCanHost: value })
 }
 
 /**

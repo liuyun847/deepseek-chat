@@ -188,6 +188,118 @@ async function loadTls() {
 
 const TLS = await loadTls()
 
+// ── 组与配对 ────────────────────────────────────────────────────────────────
+
+/** 组成员与配对信息；与业务数据分文件，避免把令牌哈希混进同步记录 */
+const GROUP_FILE = path.join(path.dirname(DATA), 'group.json')
+/** 配对码有效时长 */
+const INVITE_TTL_MS = 10 * 60 * 1000
+/** 设备令牌只存 SHA-256，明文只在创建/加入时返回一次 */
+let group = null
+let groupSaveChain = Promise.resolve()
+/** 配对码字符集：去掉 0/O/1/I 等易混字符 */
+const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+
+const hashToken = (value) => crypto.createHash('sha256').update(value, 'utf8').digest('hex')
+
+/** 生成一次设备令牌（明文） */
+const newDeviceToken = () => crypto.randomBytes(24).toString('base64url')
+
+/** 生成一次性配对码 */
+const newInviteCode = () =>
+  Array.from({ length: 8 }, () => CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)]).join('')
+
+/** 组的对外视图：绝不包含 tokenHash */
+const publicGroup = () =>
+  group
+    ? {
+        groupId: group.groupId,
+        groupName: group.groupName,
+        hostDeviceId: group.hostDeviceId,
+        epoch: group.epoch,
+        createdAt: group.createdAt,
+        devices: Object.values(group.devices).map((device) => ({
+          id: device.id,
+          name: device.name,
+          canHost: device.canHost === true,
+          joinedAt: device.joinedAt,
+          lastSeenAt: device.lastSeenAt ?? null,
+        })),
+      }
+    : null
+
+/** 原子落盘 group.json（串行，避免并发写坏） */
+const saveGroup = () => {
+  const payload = JSON.stringify(group, null, 2)
+  groupSaveChain = groupSaveChain
+    .then(async () => {
+      await fsp.mkdir(path.dirname(GROUP_FILE), { recursive: true, mode: 0o700 })
+      const tmp = GROUP_FILE + '.tmp'
+      await fsp.writeFile(tmp, payload, { encoding: 'utf8', mode: 0o600 })
+      if (!IS_WINDOWS) await fsp.chmod(tmp, 0o600).catch(() => {})
+      await fsp.rename(tmp, GROUP_FILE)
+    })
+    .catch((error) => {
+      console.error('[sync] 组信息落盘失败:', error.message)
+    })
+  return groupSaveChain
+}
+
+/** 启动时读组信息；坏数据按「没有组」处理，不让服务起不来 */
+const loadGroup = async () => {
+  try {
+    const text = await fsp.readFile(GROUP_FILE, 'utf8')
+    const parsed = JSON.parse(text)
+    if (
+      parsed &&
+      typeof parsed.groupId === 'string' &&
+      typeof parsed.hostDeviceId === 'string' &&
+      Number.isInteger(parsed.epoch) &&
+      parsed.devices &&
+      typeof parsed.devices === 'object'
+    ) {
+      group = parsed
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.error('[sync] 读取组信息失败（按无组处理）:', error.message)
+    }
+  }
+}
+
+/** 从请求头取设备令牌；与全局口令复用同一组头 */
+const deviceByToken = (presented) => {
+  if (!group || !presented) return null
+  const hash = hashToken(presented)
+  for (const device of Object.values(group.devices)) {
+    if (device.tokenHash === hash) return device
+  }
+  return null
+}
+
+/**
+ * 一次请求的鉴权结果。
+ * @returns {{ device: object|null, legacy: boolean } | null} null 表示未通过
+ */
+const authenticate = (req) => {
+  const presented = presentedToken(req)
+  if (!presented) return null
+  if (TOKEN && tokenMatches(presented)) {
+    return { device: null, legacy: true }
+  }
+  const device = deviceByToken(presented)
+  return device ? { device, legacy: false } : null
+}
+
+/** 记录设备最近一次出现；60 秒内不重复落盘 */
+const touchDevice = (device) => {
+  if (!device) return
+  const now = Date.now()
+  if (now - (device.lastSeenAt ?? 0) < 60_000) return
+  device.lastSeenAt = now
+  void saveGroup()
+}
+
 // ── 记录与合并规则（与 src/services/sync/{protocol,merge}.ts 对应） ─────────
 
 /** 设置记录的固定 id（客户端 SETTINGS_RECORD_ID） */
@@ -801,6 +913,17 @@ function readBody(req) {
   })
 }
 
+/** 读 JSON 请求体；空体或坏 JSON 返回 null */
+async function readJsonBody(req) {
+  const text = await readBody(req)
+  if (!text.trim()) return null
+  try {
+    return JSON.parse(text)
+  } catch {
+    return null
+  }
+}
+
 /** 推送：逐条按 LWW 合并，返回采纳 / 拒绝条数 */
 function applyPush(incoming) {
   const applied = { accepted: 0, rejected: 0 }
@@ -857,14 +980,30 @@ const requestHandler = async (req, res) => {
     return
   }
 
-  // 口令闸：只锁 /api/*；OPTIONS 已在上面返回（浏览器预检不带自定义头）
-  if (TOKEN && url.pathname.startsWith('/api/') && !tokenMatches(presentedToken(req))) {
+  // 口令 / 设备令牌闸：只锁 /api/*；OPTIONS 已在上面返回（浏览器预检不带自定义头）
+  const auth = authenticate(req)
+  const isApi = url.pathname.startsWith('/api/')
+  const openGroupRoute =
+    (url.pathname === '/api/group' && req.method === 'GET') ||
+    url.pathname === '/api/group/join' ||
+    (url.pathname === '/api/group/create' && group === null)
+  const groupProtected =
+    url.pathname === '/api/state' ||
+    url.pathname === '/api/sync' ||
+    (url.pathname.startsWith('/api/group/') && !openGroupRoute)
+  if (
+    (TOKEN && isApi && !openGroupRoute && !auth) ||
+    (!TOKEN && group && groupProtected && !auth)
+  ) {
     send(req, res, 401, {
       ok: false,
-      error: '需要访问口令：Authorization: Bearer <token> 或 X-Sync-Token',
+      error: '需要访问凭证：Authorization: Bearer <设备令牌或口令> / X-Sync-Token',
     })
     log(401, 'unauthorized')
     return
+  }
+  if (auth) {
+    touchDevice(auth.device)
   }
 
   if (url.pathname === '/' && req.method === 'GET') {
@@ -875,9 +1014,204 @@ const requestHandler = async (req, res) => {
       tokenRequired: TOKEN !== '',
       tls: TLS !== null,
       tlsFingerprint: TLS?.fingerprint ?? null,
-      endpoints: ['GET /api/health', 'GET /api/state', 'POST /api/sync'],
+      endpoints: [
+        'GET /api/health',
+        'GET /api/state',
+        'POST /api/sync',
+        'GET /api/group',
+        'POST /api/group/create',
+        'POST /api/group/join',
+        'POST /api/group/invite',
+        'POST /api/group/host',
+        'POST /api/group/revoke',
+      ],
     })
     log(200)
+    return
+  }
+
+  if (url.pathname === '/api/group' && req.method === 'GET') {
+    send(req, res, 200, { ok: true, group: publicGroup() })
+    log(200)
+    return
+  }
+
+  if (url.pathname === '/api/group/create' && req.method === 'POST') {
+    if (group) {
+      send(req, res, 409, { ok: false, error: '组已存在，请改用加入组' })
+      log(409, 'group-exists')
+      return
+    }
+    const body = await readJsonBody(req)
+    const device = typeof body?.device === 'string' ? body.device.trim() : ''
+    if (!device) {
+      send(req, res, 400, { ok: false, error: '缺少 device' })
+      log(400, 'bad-device')
+      return
+    }
+    const now = Date.now()
+    const token = newDeviceToken()
+    const code = newInviteCode()
+    group = {
+      groupId: 'grp-' + crypto.randomBytes(4).toString('hex'),
+      groupName:
+        typeof body.groupName === 'string' && body.groupName.trim()
+          ? body.groupName.trim().slice(0, 40)
+          : '我的设备',
+      createdAt: now,
+      hostDeviceId: device,
+      epoch: 1,
+      devices: {
+        [device]: {
+          id: device,
+          name: typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 40) : device,
+          tokenHash: hashToken(token),
+          canHost: body.canHost !== false,
+          joinedAt: now,
+          lastSeenAt: now,
+        },
+      },
+      invite: { codeHash: hashToken(code), expiresAt: now + INVITE_TTL_MS },
+    }
+    await saveGroup()
+    send(req, res, 200, {
+      ok: true,
+      group: publicGroup(),
+      deviceToken: token,
+      invite: { code, expiresAt: group.invite.expiresAt },
+    })
+    log(200, 'group-created')
+    return
+  }
+
+  if (url.pathname === '/api/group/join' && req.method === 'POST') {
+    if (!group) {
+      send(req, res, 404, { ok: false, error: '还没有组，请先在主机上创建组' })
+      log(404, 'no-group')
+      return
+    }
+    const body = await readJsonBody(req)
+    const code = typeof body?.code === 'string' ? body.code.replace(/\s+/g, '').toUpperCase() : ''
+    const device = typeof body?.device === 'string' ? body.device.trim() : ''
+    if (!code || !device) {
+      send(req, res, 400, { ok: false, error: '缺少配对码或 device' })
+      log(400, 'bad-join')
+      return
+    }
+    const invite = group.invite
+    if (
+      !invite ||
+      invite.expiresAt < Date.now() ||
+      hashToken(code) !== invite.codeHash
+    ) {
+      send(req, res, 403, { ok: false, error: '配对码无效或已过期' })
+      log(403, 'bad-invite')
+      return
+    }
+    const now = Date.now()
+    const token = newDeviceToken()
+    const existing = group.devices[device]
+    group.devices[device] = {
+      id: device,
+      name:
+        typeof body.name === 'string' && body.name.trim()
+          ? body.name.trim().slice(0, 40)
+          : (existing?.name ?? device),
+      tokenHash: hashToken(token),
+      canHost: body.canHost === true || existing?.canHost === true,
+      joinedAt: existing?.joinedAt ?? now,
+      lastSeenAt: now,
+    }
+    // 一次性配对码：成功加入即作废
+    delete group.invite
+    await saveGroup()
+    send(req, res, 200, { ok: true, group: publicGroup(), deviceToken: token })
+    log(200, 'group-joined')
+    return
+  }
+
+  if (url.pathname === '/api/group/invite' && req.method === 'POST') {
+    if (!group) {
+      send(req, res, 404, { ok: false, error: '还没有组' })
+      log(404, 'no-group')
+      return
+    }
+    const isHost = auth?.legacy || (auth?.device && auth.device.id === group.hostDeviceId)
+    if (!isHost) {
+      send(req, res, 403, { ok: false, error: '只有主机能生成配对码' })
+      log(403, 'not-host')
+      return
+    }
+    const code = newInviteCode()
+    const expiresAt = Date.now() + INVITE_TTL_MS
+    group.invite = { codeHash: hashToken(code), expiresAt }
+    await saveGroup()
+    send(req, res, 200, { ok: true, invite: { code, expiresAt } })
+    log(200, 'invite-created')
+    return
+  }
+
+  if (url.pathname === '/api/group/host' && req.method === 'POST') {
+    if (!group) {
+      send(req, res, 404, { ok: false, error: '还没有组' })
+      log(404, 'no-group')
+      return
+    }
+    const body = await readJsonBody(req)
+    const targetId = typeof body?.targetDeviceId === 'string' ? body.targetDeviceId.trim() : ''
+    if (!targetId || !group.devices[targetId]) {
+      send(req, res, 404, { ok: false, error: '目标设备不在组里' })
+      log(404, 'no-target')
+      return
+    }
+    if (body.epoch !== group.epoch) {
+      send(req, res, 409, { ok: false, error: 'epoch_stale', group: publicGroup() })
+      log(409, 'epoch-stale')
+      return
+    }
+    if (group.devices[targetId].canHost !== true) {
+      send(req, res, 409, { ok: false, error: '目标设备不能当主机' })
+      log(409, 'cannot-host')
+      return
+    }
+    if (targetId !== group.hostDeviceId) {
+      group.hostDeviceId = targetId
+      group.epoch += 1
+      await saveGroup()
+    }
+    send(req, res, 200, { ok: true, group: publicGroup() })
+    log(200, 'host-changed')
+    return
+  }
+
+  if (url.pathname === '/api/group/revoke' && req.method === 'POST') {
+    if (!group) {
+      send(req, res, 404, { ok: false, error: '还没有组' })
+      log(404, 'no-group')
+      return
+    }
+    const isHost = auth?.legacy || (auth?.device && auth.device.id === group.hostDeviceId)
+    if (!isHost) {
+      send(req, res, 403, { ok: false, error: '只有主机能移除设备' })
+      log(403, 'not-host')
+      return
+    }
+    const body = await readJsonBody(req)
+    const targetId = typeof body?.targetDeviceId === 'string' ? body.targetDeviceId.trim() : ''
+    if (!targetId || !group.devices[targetId]) {
+      send(req, res, 404, { ok: false, error: '目标设备不在组里' })
+      log(404, 'no-target')
+      return
+    }
+    if (targetId === group.hostDeviceId) {
+      send(req, res, 409, { ok: false, error: '不能移除主机自己，请先更换主机' })
+      log(409, 'remove-host')
+      return
+    }
+    delete group.devices[targetId]
+    await saveGroup()
+    send(req, res, 200, { ok: true, group: publicGroup() })
+    log(200, 'device-revoked')
     return
   }
 
@@ -894,6 +1228,11 @@ const requestHandler = async (req, res) => {
       tokenRequired: TOKEN !== '',
       tls: TLS !== null,
       tlsFingerprint: TLS?.fingerprint ?? null,
+      groupId: group?.groupId ?? null,
+      groupName: group?.groupName ?? null,
+      hostDeviceId: group?.hostDeviceId ?? null,
+      groupEpoch: group?.epoch ?? null,
+      groupDevices: group ? Object.keys(group.devices).length : 0,
       ...stats(),
     })
     log(200)
@@ -927,6 +1266,16 @@ const requestHandler = async (req, res) => {
     if (payload?.format !== undefined && payload.format !== SYNC_FORMAT) {
       send(req, res, 400, { ok: false, error: '同步协议不匹配' })
       log(400, 'format')
+      return
+    }
+    if (group && Number.isInteger(payload?.epoch) && payload.epoch < group.epoch) {
+      send(req, res, 409, { ok: false, error: 'epoch_stale', group: publicGroup() })
+      log(409, 'epoch-stale')
+      return
+    }
+    if (auth?.device && payload?.device !== auth.device.id) {
+      send(req, res, 403, { ok: false, error: 'device 与设备令牌不一致' })
+      log(403, 'device-mismatch')
       return
     }
     if (!Array.isArray(payload?.records)) {
@@ -986,6 +1335,7 @@ async function shutdown(signal) {
   clearTimeout(flushTimer)
   server.close()
   await flush()
+  await groupSaveChain
   console.log('[sync] 已退出')
   process.exit(0)
 }
@@ -995,6 +1345,7 @@ process.on('SIGTERM', () => void shutdown('SIGTERM'))
 process.on('SIGHUP', () => void shutdown('SIGHUP'))
 
 await load()
+await loadGroup()
 server.listen(PORT, HOST, () => {
   const scheme = TLS ? 'https' : 'http'
   console.log('[sync] %s v%d 监听 %s://%s:%d', SYNC_FORMAT, SYNC_VERSION, scheme, HOST, PORT)
@@ -1006,6 +1357,18 @@ server.listen(PORT, HOST, () => {
   }
   console.log('[sync] 数据文件 %s', DATA)
   console.log('[sync] 名称 %s（仅本机日志，不再对外返回）', NAME)
+  if (group) {
+    console.log(
+      '[sync] 组 %s（%s），主机 %s，epoch %d，成员 %d',
+      group.groupId,
+      group.groupName,
+      group.hostDeviceId,
+      group.epoch,
+      Object.keys(group.devices).length
+    )
+  } else {
+    console.log('[sync] 未建组：客户端可在设置里创建组，再用配对码加入')
+  }
   console.log(
     '[sync] 跨域白名单：回环任意端口 + 与请求 Host 同源%s',
     ALLOW_WEBVIEW_ORIGIN ? ' + ' + WEBVIEW_ORIGIN : ''
