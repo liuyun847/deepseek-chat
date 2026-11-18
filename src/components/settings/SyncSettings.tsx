@@ -3,8 +3,26 @@ import { useEffect, useId, useState, type ReactNode } from 'react'
 import { useTranslate } from '../../i18n/index.js'
 import { useChatStore } from '../../services/chat/store.js'
 import { useLocalService } from '../../services/localService.js'
-import { setSyncDeviceName, setSyncServerUrl, useSettings } from '../../services/settings.js'
-import { resolveServerUrl, sameOriginServer, SyncError } from '../../services/sync/api.js'
+import {
+  clearSyncGroup,
+  saveSyncGroup,
+  setSyncDeviceName,
+  setSyncServerUrl,
+  useSettings,
+} from '../../services/settings.js'
+import {
+  createGroup,
+  createInvite,
+  fetchGroup,
+  joinGroup,
+  resolveServerUrl,
+  revokeDevice,
+  sameOriginServer,
+  SyncError,
+  transferHost,
+  type GroupInfo,
+  type InviteInfo,
+} from '../../services/sync/api.js'
 import {
   prepareFirstSync,
   refreshLastSync,
@@ -16,6 +34,7 @@ import {
 import type { LastSyncInfo } from '../../services/sync/snapshots.js'
 import { Button } from '../base/Button.js'
 import { Modal } from '../base/Modal.js'
+import { Select } from '../base/Select.js'
 import styles from './Settings.module.css'
 import syncStyles from './SyncSettings.module.css'
 
@@ -108,6 +127,16 @@ export const SyncSettings = () => {
   const [actionStatus, setActionStatus] = useState<Status>(null)
   const [preview, setPreview] = useState<FirstSyncPreview | null>(null)
   const [working, setWorking] = useState(false)
+  const syncDeviceId = useSettings((state) => state.syncDeviceId)
+  const groupId = useSettings((state) => state.syncGroupId)
+  const groupToken = useSettings((state) => state.syncGroupToken)
+  const groupEpoch = useSettings((state) => state.syncGroupEpoch)
+  const [group, setGroup] = useState<GroupInfo | null>(null)
+  const [invite, setInvite] = useState<InviteInfo | null>(null)
+  const [joinCode, setJoinCode] = useState('')
+  const [groupBusy, setGroupBusy] = useState(false)
+  const [groupStatus, setGroupStatus] = useState<Status>(null)
+  const [hostTarget, setHostTarget] = useState('')
 
   useEffect(() => {
     void refreshLastSync()
@@ -130,6 +159,179 @@ export const SyncSettings = () => {
         : t('syncNeedsServer')
   const disabled = disabledReason !== null || busy !== null || working
   const lastText = useLastSyncText(last)
+
+  // 打开设置时读一次服务端的组信息；已加入组但服务端没有组时保持 null，提示重新配对
+  useEffect(() => {
+    if (!effectiveServer) {
+      return
+    }
+    let cancelled = false
+    void fetchGroup(effectiveServer)
+      .then((info) => {
+        if (!cancelled) {
+          setGroup(info)
+        }
+      })
+      .catch(() => {
+        // 服务没起来时由「测试连接」给出具体原因，这里不重复报错
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [effectiveServer, groupId])
+
+  // 默认把「更换主机」的目标选成第一个可当主机的其它设备
+  useEffect(() => {
+    if (!group) {
+      setHostTarget('')
+      return
+    }
+    const candidate = group.devices.find(
+      (device) => device.canHost && device.id !== group.hostDeviceId
+    )
+    setHostTarget(candidate?.id ?? '')
+  }, [group])
+
+  const groupError = (error: unknown) => {
+    setGroupStatus({ text: describe(error), error: true })
+  }
+
+  const onCreateGroup = async () => {
+    if (!effectiveServer) {
+      return
+    }
+    commit()
+    setGroupBusy(true)
+    setGroupStatus(null)
+    try {
+      const result = await createGroup(effectiveServer, {
+        device: syncDeviceId,
+        name: deviceName,
+        canHost: true,
+      })
+      saveSyncGroup(result.group, result.deviceToken)
+      setGroup(result.group)
+      setInvite(result.invite)
+      setGroupStatus({ text: t('syncGroupCreated') })
+    } catch (error) {
+      groupError(error)
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  const onJoinGroup = async () => {
+    if (!effectiveServer) {
+      return
+    }
+    const code = joinCode.trim().toUpperCase()
+    if (!code) {
+      return
+    }
+    commit()
+    setGroupBusy(true)
+    setGroupStatus(null)
+    try {
+      const result = await joinGroup(effectiveServer, {
+        code,
+        device: syncDeviceId,
+        name: deviceName,
+        canHost: true,
+      })
+      saveSyncGroup(result.group, result.deviceToken)
+      setGroup(result.group)
+      setJoinCode('')
+      setGroupStatus({ text: t('syncGroupJoined') })
+    } catch (error) {
+      groupError(error)
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  const onInvite = async () => {
+    if (!effectiveServer || !groupToken) {
+      setGroupStatus({ text: t('syncGroupTokenMissing'), error: true })
+      return
+    }
+    setGroupBusy(true)
+    setGroupStatus(null)
+    try {
+      setInvite(await createInvite(effectiveServer, groupToken))
+    } catch (error) {
+      groupError(error)
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  const onRefreshGroup = async () => {
+    if (!effectiveServer) {
+      return
+    }
+    setGroupBusy(true)
+    setGroupStatus(null)
+    try {
+      const info = await fetchGroup(effectiveServer)
+      setGroup(info)
+      if (info) {
+        saveSyncGroup(info)
+      }
+    } catch (error) {
+      groupError(error)
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  const onChangeHost = async () => {
+    if (!effectiveServer || !groupToken || !hostTarget) {
+      return
+    }
+    setGroupBusy(true)
+    setGroupStatus(null)
+    try {
+      const info = await transferHost(
+        effectiveServer,
+        groupToken,
+        syncDeviceId,
+        hostTarget,
+        groupEpoch
+      )
+      saveSyncGroup(info)
+      setGroup(info)
+      setGroupStatus({ text: t('syncGroupHostChanged') })
+    } catch (error) {
+      groupError(error)
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  const onRevokeGroupDevice = async (target: string) => {
+    if (!effectiveServer || !groupToken) {
+      return
+    }
+    setGroupBusy(true)
+    setGroupStatus(null)
+    try {
+      const info = await revokeDevice(effectiveServer, groupToken, target)
+      saveSyncGroup(info)
+      setGroup(info)
+      setGroupStatus({ text: t('syncGroupRevoked') })
+    } catch (error) {
+      groupError(error)
+    } finally {
+      setGroupBusy(false)
+    }
+  }
+
+  const onLeaveGroup = () => {
+    clearSyncGroup()
+    setGroup(null)
+    setInvite(null)
+    setGroupStatus(null)
+  }
 
   const onTest = async () => {
     commit()
@@ -182,6 +384,14 @@ export const SyncSettings = () => {
       setWorking(false)
     }
   }
+
+  const hostName =
+    group?.devices.find((device) => device.id === group.hostDeviceId)?.name ?? '—'
+  const isHost = group?.hostDeviceId === syncDeviceId
+  const hostOptions =
+    group?.devices
+      .filter((device) => device.canHost && device.id !== group.hostDeviceId)
+      .map((device) => ({ value: device.id, label: device.name })) ?? []
 
   return (
     <div className={syncStyles.sync}>
@@ -238,6 +448,149 @@ export const SyncSettings = () => {
               onBlur={commit}
             />
           </div>
+        }
+      />
+      <Row
+        label={t('syncGroupLabel')}
+        description={
+          group ? `${group.groupName} · ${group.groupId}` : t('syncGroupDescription')
+        }
+        status={
+          groupStatus ??
+          (groupId && !groupToken
+            ? { text: t('syncGroupTokenMissing'), error: true }
+            : null)
+        }
+        action={
+          group ? (
+            <div className={syncStyles.groupPanel}>
+              <div className={syncStyles.groupMeta}>
+                <span>
+                  {t('syncGroupHost')}: {hostName}
+                  {group.hostDeviceId === syncDeviceId ? ` (${t('syncGroupThisDevice')})` : ''}
+                </span>
+                <span>
+                  {t('syncGroupMembers')}: {group.devices.length}
+                </span>
+              </div>
+              <ul className={syncStyles.memberList}>
+                {group.devices.map((device) => (
+                  <li key={device.id} className={syncStyles.member}>
+                    <span className={syncStyles.memberName}>{device.name}</span>
+                    {device.id === group.hostDeviceId ? (
+                      <span className={syncStyles.badge}>{t('syncGroupHost')}</span>
+                    ) : null}
+                    {device.id === syncDeviceId ? (
+                      <span className={syncStyles.badge}>{t('syncGroupThisDevice')}</span>
+                    ) : null}
+                    {isHost && device.id !== group.hostDeviceId && device.id !== syncDeviceId ? (
+                      <button
+                        type="button"
+                        className={syncStyles.memberRemove}
+                        disabled={groupBusy}
+                        onClick={() => void onRevokeGroupDevice(device.id)}
+                      >
+                        {t('syncGroupRemove')}
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+              {invite ? (
+                <div className={syncStyles.invite}>
+                  {t('syncGroupInviteHint', {
+                    code: invite.code,
+                    time: new Date(invite.expiresAt).toLocaleTimeString(),
+                  })}
+                </div>
+              ) : null}
+              <div className={syncStyles.field}>
+                {isHost ? (
+                  <Button
+                    size="m"
+                    className={styles.cellButton}
+                    disabled={groupBusy}
+                    onClick={() => void onInvite()}
+                  >
+                    {t('syncGroupInvite')}
+                  </Button>
+                ) : null}
+                <Button
+                  variant="outlined"
+                  size="m"
+                  className={styles.cellButton}
+                  disabled={groupBusy}
+                  onClick={() => void onRefreshGroup()}
+                >
+                  {t('syncGroupRefresh')}
+                </Button>
+                <Button
+                  variant="outlined"
+                  size="m"
+                  className={styles.cellButton}
+                  disabled={groupBusy}
+                  onClick={onLeaveGroup}
+                >
+                  {t('syncGroupLeave')}
+                </Button>
+              </div>
+              <div className={syncStyles.field}>
+                <Select
+                  ariaLabel={t('syncGroupChangeHost')}
+                  value={hostTarget}
+                  placeholder={t('syncGroupNoHostTarget')}
+                  options={hostOptions}
+                  onChange={setHostTarget}
+                />
+                <Button
+                  variant="outlined"
+                  size="m"
+                  className={styles.cellButton}
+                  disabled={!hostTarget || groupBusy}
+                  onClick={() => void onChangeHost()}
+                >
+                  {t('syncGroupChangeHost')}
+                </Button>
+              </div>
+              <div className={syncStyles.hint}>{t('syncGroupChangeHostHint')}</div>
+            </div>
+          ) : (
+            <div className={syncStyles.groupPanel}>
+              <div className={syncStyles.field}>
+                <Button
+                  size="m"
+                  className={styles.cellButton}
+                  disabled={groupBusy || !effectiveServer}
+                  onClick={() => void onCreateGroup()}
+                >
+                  {t('syncGroupCreate')}
+                </Button>
+                <input
+                  className={syncStyles.input}
+                  value={joinCode}
+                  placeholder={t('syncGroupJoinPlaceholder')}
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={12}
+                  onChange={(event) => setJoinCode(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !groupBusy) {
+                      void onJoinGroup()
+                    }
+                  }}
+                />
+                <Button
+                  variant="outlined"
+                  size="m"
+                  className={styles.cellButton}
+                  disabled={!joinCode.trim() || groupBusy || !effectiveServer}
+                  onClick={() => void onJoinGroup()}
+                >
+                  {t('syncGroupJoin')}
+                </Button>
+              </div>
+            </div>
+          )
         }
       />
       <Row

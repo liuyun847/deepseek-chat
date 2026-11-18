@@ -16,12 +16,14 @@ const REQUEST_TIMEOUT = 15_000
 export class SyncError extends Error {
   readonly key: TranslationKey
   readonly detail?: string
+  status?: number
 
-  constructor(key: TranslationKey, detail?: string) {
+  constructor(key: TranslationKey, detail?: string, status?: number) {
     super(detail ?? key)
     this.name = 'SyncError'
     this.key = key
     this.detail = detail
+    this.status = status
   }
 }
 
@@ -94,7 +96,7 @@ export const resolveServerUrl = (typed: string, localService: boolean): string |
   return localService ? sameOriginServer() : null
 }
 
-type RequestOptions = { body?: unknown; timeout?: number }
+type RequestOptions = { body?: unknown; timeout?: number; token?: string }
 
 /** 本机服务（local-server）在同步服务连不上时回的 error.type */
 const SYNC_UPSTREAM_DOWN = 'sync_upstream_down'
@@ -154,9 +156,16 @@ const request = async (url: string, options: RequestOptions = {}): Promise<unkno
   )
   let response: Response
   try {
+    const headers: Record<string, string> = {}
+    if (options.body !== undefined) {
+      headers['Content-Type'] = 'application/json'
+    }
+    if (options.token) {
+      headers.Authorization = `Bearer ${options.token}`
+    }
     response = await fetch(url, {
       method: options.body === undefined ? 'GET' : 'POST',
-      headers: options.body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: Object.keys(headers).length > 0 ? headers : undefined,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: controller.signal,
       cache: 'no-store',
@@ -170,18 +179,25 @@ const request = async (url: string, options: RequestOptions = {}): Promise<unkno
     const { type, message } = await readErrorBody(response)
     // 同步服务没起来（本机服务回的 502）：换成一句能照着做的固定文案，别把 JSON 拼进提示
     if (type === SYNC_UPSTREAM_DOWN) {
-      throw new SyncError('syncErrorNotRunning', message)
+      throw new SyncError('syncErrorNotRunning', message, response.status)
     }
     // 卡住不回话（本机服务的 10 秒超时）：按「连不上」处理，同样给固定文案
     if (type === SYNC_UPSTREAM_TIMEOUT) {
-      throw new SyncError('syncErrorNetwork')
+      throw new SyncError('syncErrorNetwork', undefined, response.status)
     }
     if (response.status === 404) {
-      throw new SyncError('syncErrorNotFound')
+      throw new SyncError('syncErrorNotFound', message, response.status)
+    }
+    if (response.status === 401) {
+      throw new SyncError('syncErrorUnauthorized', message, response.status)
+    }
+    if (response.status === 409) {
+      throw new SyncError('syncErrorEpoch', message, response.status)
     }
     throw new SyncError(
       response.status >= 500 ? 'syncErrorServer' : 'syncErrorResponse',
-      message || String(response.status)
+      message || String(response.status),
+      response.status
     )
   }
   try {
@@ -208,6 +224,12 @@ export type HealthInfo = {
   tls: boolean
   /** 自签证书的 SHA-256 指纹；未启用 TLS 时 null */
   tlsFingerprint: string | null
+  /** 组信息；未建组时为 null / 0 */
+  groupId: string | null
+  groupName: string | null
+  hostDeviceId: string | null
+  groupEpoch: number | null
+  groupDevices: number
 }
 
 /** 把 JSON 里的 records 数组校验成记录列表；不合法条目直接丢掉并在 reason 里体现 */
@@ -243,8 +265,8 @@ const asObject = (value: unknown): Record<string, unknown> => {
 }
 
 /** 探活 + 统计 */
-export const fetchHealth = async (serverUrl: string): Promise<HealthInfo> => {
-  const body = asObject(await request(serverUrl + '/api/health', { timeout: 8000 }))
+export const fetchHealth = async (serverUrl: string, token?: string): Promise<HealthInfo> => {
+  const body = asObject(await request(serverUrl + '/api/health', { timeout: 8000, token }))
   checkFormat(body)
   return {
     name: typeof body.name === 'string' ? body.name : serverUrl,
@@ -257,12 +279,17 @@ export const fetchHealth = async (serverUrl: string): Promise<HealthInfo> => {
     dataFile: typeof body.dataFile === 'string' ? body.dataFile : '',
     tls: body.tls === true,
     tlsFingerprint: typeof body.tlsFingerprint === 'string' ? body.tlsFingerprint : null,
+    groupId: typeof body.groupId === 'string' ? body.groupId : null,
+    groupName: typeof body.groupName === 'string' ? body.groupName : null,
+    hostDeviceId: typeof body.hostDeviceId === 'string' ? body.hostDeviceId : null,
+    groupEpoch: typeof body.groupEpoch === 'number' ? body.groupEpoch : null,
+    groupDevices: typeof body.groupDevices === 'number' ? body.groupDevices : 0,
   }
 }
 
-/** 拉全量记录（含墓碑） */
-export const fetchState = async (serverUrl: string): Promise<SyncRecord[]> => {
-  const body = asObject(await request(serverUrl + '/api/state'))
+/** 拉全量记录（含墓碑）；加入组后必须带设备令牌 */
+export const fetchState = async (serverUrl: string, token?: string): Promise<SyncRecord[]> => {
+  const body = asObject(await request(serverUrl + '/api/state', { token }))
   checkFormat(body)
   return parseRecords(body.records)
 }
@@ -277,11 +304,20 @@ export type PushResult = {
 export const pushRecords = async (
   serverUrl: string,
   device: string,
-  records: SyncRecord[]
+  records: SyncRecord[],
+  token?: string,
+  epoch?: number
 ): Promise<PushResult> => {
   const body = asObject(
     await request(serverUrl + '/api/sync', {
-      body: { format: SYNC_FORMAT, version: SYNC_VERSION, device, records },
+      token,
+      body: {
+        format: SYNC_FORMAT,
+        version: SYNC_VERSION,
+        device,
+        records,
+        ...(typeof epoch === 'number' ? { epoch } : {}),
+      },
     })
   )
   checkFormat(body)
@@ -295,5 +331,148 @@ export const pushRecords = async (
       ? ((applied as Record<string, unknown>).rejected as number)
       : 0,
   }
+}
+
+// ── 组与配对 ────────────────────────────────────────────────────────────────
+
+export type GroupDevice = {
+  id: string
+  name: string
+  canHost: boolean
+  joinedAt: number
+  lastSeenAt: number | null
+}
+
+export type GroupInfo = {
+  groupId: string
+  groupName: string
+  hostDeviceId: string
+  epoch: number
+  createdAt: number
+  devices: GroupDevice[]
+}
+
+export type InviteInfo = { code: string; expiresAt: number }
+export type CreateGroupResult = { group: GroupInfo; deviceToken: string; invite: InviteInfo }
+export type JoinGroupResult = { group: GroupInfo; deviceToken: string }
+
+/** 校验服务端返回的组结构；字段缺失按协议错误处理 */
+const parseGroup = (value: unknown): GroupInfo => {
+  const group = asObject(value)
+  if (
+    typeof group.groupId !== 'string' ||
+    typeof group.groupName !== 'string' ||
+    typeof group.hostDeviceId !== 'string' ||
+    typeof group.epoch !== 'number' ||
+    !Array.isArray(group.devices)
+  ) {
+    throw new SyncError('syncErrorResponse')
+  }
+  const devices: GroupDevice[] = []
+  for (const item of group.devices) {
+    const device = asObject(item)
+    if (typeof device.id !== 'string' || typeof device.name !== 'string') {
+      continue
+    }
+    devices.push({
+      id: device.id,
+      name: device.name,
+      canHost: device.canHost === true,
+      joinedAt: typeof device.joinedAt === 'number' ? device.joinedAt : 0,
+      lastSeenAt: typeof device.lastSeenAt === 'number' ? device.lastSeenAt : null,
+    })
+  }
+  return {
+    groupId: group.groupId,
+    groupName: group.groupName,
+    hostDeviceId: group.hostDeviceId,
+    epoch: group.epoch,
+    createdAt: typeof group.createdAt === 'number' ? group.createdAt : 0,
+    devices,
+  }
+}
+
+const parseInvite = (value: unknown): InviteInfo => {
+  const invite = asObject(value)
+  if (typeof invite.code !== 'string' || typeof invite.expiresAt !== 'number') {
+    throw new SyncError('syncErrorResponse')
+  }
+  return { code: invite.code, expiresAt: invite.expiresAt }
+}
+
+/** 读组信息；服务端还没建组时返回 null */
+export const fetchGroup = async (serverUrl: string): Promise<GroupInfo | null> => {
+  const body = asObject(await request(serverUrl + '/api/group'))
+  return body.group == null ? null : parseGroup(body.group)
+}
+
+/** 第一台设备创建组，返回设备令牌与一次性配对码 */
+export const createGroup = async (
+  serverUrl: string,
+  input: { device: string; name: string; groupName?: string; canHost?: boolean }
+): Promise<CreateGroupResult> => {
+  const body = asObject(
+    await request(serverUrl + '/api/group/create', { body: input })
+  )
+  return {
+    group: parseGroup(body.group),
+    deviceToken: typeof body.deviceToken === 'string' ? body.deviceToken : '',
+    invite: parseInvite(body.invite),
+  }
+}
+
+/** 用配对码加入组 */
+export const joinGroup = async (
+  serverUrl: string,
+  input: { code: string; device: string; name: string; canHost?: boolean }
+): Promise<JoinGroupResult> => {
+  const body = asObject(await request(serverUrl + '/api/group/join', { body: input }))
+  return {
+    group: parseGroup(body.group),
+    deviceToken: typeof body.deviceToken === 'string' ? body.deviceToken : '',
+  }
+}
+
+/** 主机生成新的配对码 */
+export const createInvite = async (serverUrl: string, token: string): Promise<InviteInfo> => {
+  const body = asObject(
+    await request(serverUrl + '/api/group/invite', {
+      token,
+      body: { device: 'host' },
+    })
+  )
+  return parseInvite(body.invite)
+}
+
+/** 更换主机；epoch 用于乐观并发 */
+export const transferHost = async (
+  serverUrl: string,
+  token: string,
+  device: string,
+  targetDeviceId: string,
+  epoch: number
+): Promise<GroupInfo> => {
+  const body = asObject(
+    await request(serverUrl + '/api/group/host', {
+      token,
+      body: { device, targetDeviceId, epoch },
+    })
+  )
+  return parseGroup(body.group)
+}
+
+/** 主机移除成员 */
+export const revokeDevice = async (
+  serverUrl: string,
+  token: string,
+  targetDeviceId: string
+): Promise<GroupInfo> => {
+  const body = asObject(
+    await request(serverUrl + '/api/group/revoke', {
+      token,
+      body: { targetDeviceId },
+    })
+  )
+  return parseGroup(body.group)
 }
 
