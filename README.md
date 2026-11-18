@@ -50,16 +50,17 @@ The repo ships a zero-dependency sync service plus a client entry point for sync
 Start the service (Node.js 22+, built-in modules only). On Windows the scripts below do it for you — idempotent, they exit 0 only after `GET /api/health` reports `format=chat-demo-sync`:
 
 ```powershell
-.\sync-server\start.ps1                      # start (hidden window, port 7788; -Port / SYNC_PORT to change)
+node sync-server\gen-cert.mjs                # first run: self-signed TLS cert in sync-server\tls\
+.\sync-server\start.ps1                      # start HTTPS (hidden window, port 7788; -Port / SYNC_PORT to change)
 .\sync-server\stop.ps1                       # stop by port, idempotent
-node sync-server/server.mjs --port 7788      # or run it in the foreground to see the service log
+node sync-server/server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-server\tls\key.pem
 ```
 
 Logs: `sync-server\logs\start.log` (start/stop results). The service itself prints to stdout only and starts.ps1 deliberately does not redirect it — see the note in `start.ps1` (redirecting makes the long-lived node hold the autostart stderr file, which turned the next logon run into a silent no-op).
 
-It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-data.json`. For other devices on the LAN, start it with `--host 0.0.0.0` and enter this machine's IP in the client. In the client, open Settings → Multi-device sync, fill in the server URL (for example `http://127.0.0.1:7788`) and device name, then "Test connection" → "Sync now".
+It listens on `127.0.0.1` by default and stores data in `sync-server/data/sync-data.json`. For other devices on the LAN, start it with `--host 0.0.0.0`, keep TLS, add `--token`, and enter this machine's HTTPS address in the client. In the client, open Settings → Multi-device sync, fill in the server URL (for example `https://192.168.1.5:7788`) and device name, then "Test connection" → "Sync now". Non-loopback plain `http://` addresses are rejected by the client.
 
-On the page served by `local-server` (next section) the URL can be **left empty**: sync then uses the same-origin `/sync/api/*`, which that service forwards to `127.0.0.1:7788`, so the browser shows phone-synced chats with zero configuration. A typed URL always wins.
+The local web service trusts the self-signed cert through `SYNC_CA_FILE` (it auto-detects `sync-server/tls/cert.pem` in `start.ps1`); the browser only talks to the loopback origin, so it never sees the self-signed certificate. On the page served by `local-server` (next section) the URL can be **left empty**: sync then uses the same-origin `/sync/api/*`, which that service forwards to `https://127.0.0.1:7788`, so the browser shows phone-synced chats with zero configuration. A typed URL always wins.
 
 No restart is needed when the data file changes underneath: the service stats the file on every `/api/health`, `/api/state` and `POST /api/sync` and re-reads it (merging by last-write-wins) when someone else wrote it — so chats that arrive over P2P show up in the browser immediately, without bouncing `sync-server`.
 

@@ -117,6 +117,14 @@ if (-not $nodeCmd) {
 $nodePath = $nodeCmd.Source
 
 $env:PORT = [string]$Port
+# 同步上游：存在自签证书时默认走 HTTPS 并用它做 CA 校验（与 sync-server/start.ps1 配套）
+$syncCert = Join-Path (Split-Path -Parent $ServerDir) 'sync-server\tls\cert.pem'
+$syncPort = if ($env:SYNC_PORT) { $env:SYNC_PORT } else { '7788' }
+if (-not $env:SYNC_UPSTREAM -and (Test-Path -LiteralPath $syncCert)) {
+    $env:SYNC_UPSTREAM = ('https://127.0.0.1:{0}' -f $syncPort)
+    $env:SYNC_CA_FILE = $syncCert
+    Write-LogLine ('同步上游：{0}（CA {1}）' -f $env:SYNC_UPSTREAM, $env:SYNC_CA_FILE)
+}
 $serverScript = Join-Path $ServerDir 'server.mjs'
 Write-LogLine ('启动：{0} {1}' -f $nodePath, $serverScript)
 Write-LogLine ('工作目录 {0}，隐藏窗口，日志 {1}' -f $ServerDir, $ServerLog)

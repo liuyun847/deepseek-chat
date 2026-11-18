@@ -40,6 +40,7 @@
  */
 
 import http from 'node:http'
+import https from 'node:https'
 import crypto from 'node:crypto'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
@@ -100,6 +101,8 @@ if (args.help) {
       '  --name   本机日志里显示的名字，默认取主机名；不再对外返回（也可用 SYNC_NAME）',
       '  --token  访问口令；设了之后所有 /api/* 都要带 Authorization: Bearer <口令>',
       '           或 X-Sync-Token 头，否则 401（也可用 SYNC_TOKEN）',
+      '  --tls-cert  PEM 证书路径；与 --tls-key 同时给时启用 HTTPS（也可用 SYNC_TLS_CERT）',
+      '  --tls-key   PEM 私钥路径；与 --tls-cert 同时给时启用 HTTPS（也可用 SYNC_TLS_KEY）',
       '  --allow-origin  额外放行的跨域来源，逗号分隔可写多个，可重复给（也可用 SYNC_ALLOWED_ORIGINS）',
       '  --no-webview-origin  不放行 Android 外壳的 https://dsapp.local 来源',
     ].join('\n')
@@ -143,6 +146,48 @@ const EXTRA_ORIGINS = new Set(
 
 /** Windows 上 POSIX 权限位没有实际约束力，落盘只写不 chmod（靠 NTFS ACL） */
 const IS_WINDOWS = process.platform === 'win32'
+
+// ── HTTPS ───────────────────────────────────────────────────────────────────
+
+/** 证书与私钥路径；两边都给才启用 HTTPS，只给一边视为配置错误 */
+const TLS_CERT_PATH = String(
+  (Array.isArray(args['tls-cert']) ? args['tls-cert'][0] : args['tls-cert']) ??
+    process.env.SYNC_TLS_CERT ??
+    ''
+).trim()
+const TLS_KEY_PATH = String(
+  (Array.isArray(args['tls-key']) ? args['tls-key'][0] : args['tls-key']) ??
+    process.env.SYNC_TLS_KEY ??
+    ''
+).trim()
+
+/**
+ * @returns {Promise<{ cert: Buffer, key: Buffer, fingerprint: string } | null>}
+ *   未配置 TLS 时 null；证书读不了直接退出
+ */
+async function loadTls() {
+  if (!TLS_CERT_PATH && !TLS_KEY_PATH) {
+    return null
+  }
+  if (!TLS_CERT_PATH || !TLS_KEY_PATH) {
+    console.error('[sync] --tls-cert 与 --tls-key 必须同时提供')
+    process.exit(1)
+  }
+  try {
+    const [cert, key] = await Promise.all([
+      fsp.readFile(TLS_CERT_PATH),
+      fsp.readFile(TLS_KEY_PATH),
+    ])
+    const parsed = new crypto.X509Certificate(cert)
+    return { cert, key, fingerprint: parsed.fingerprint256 }
+  } catch (error) {
+    console.error('[sync] 读取 TLS 证书/私钥失败：', error.message)
+    process.exit(1)
+  }
+}
+
+const TLS = await loadTls()
+
 // ── 记录与合并规则（与 src/services/sync/{protocol,merge}.ts 对应） ─────────
 
 /** 设置记录的固定 id（客户端 SETTINGS_RECORD_ID） */
@@ -780,7 +825,7 @@ function applyPush(incoming) {
 /** 日志时间戳（只取时分秒毫秒，便于和浏览器操作对齐） */
 const stamp = () => new Date().toISOString().slice(11, 23)
 
-const server = http.createServer(async (req, res) => {
+const requestHandler = async (req, res) => {
   const started = Date.now()
   const url = new URL(req.url ?? '/', 'http://' + (req.headers.host ?? 'localhost'))
   const log = (status, extra) => {
@@ -828,6 +873,8 @@ const server = http.createServer(async (req, res) => {
       format: SYNC_FORMAT,
       version: SYNC_VERSION,
       tokenRequired: TOKEN !== '',
+      tls: TLS !== null,
+      tlsFingerprint: TLS?.fingerprint ?? null,
       endpoints: ['GET /api/health', 'GET /api/state', 'POST /api/sync'],
     })
     log(200)
@@ -845,6 +892,8 @@ const server = http.createServer(async (req, res) => {
       version: SYNC_VERSION,
       time: Date.now(),
       tokenRequired: TOKEN !== '',
+      tls: TLS !== null,
+      tlsFingerprint: TLS?.fingerprint ?? null,
       ...stats(),
     })
     log(200)
@@ -919,7 +968,11 @@ const server = http.createServer(async (req, res) => {
 
   send(req, res, 404, { ok: false, error: '未知端点: ' + req.method + ' ' + url.pathname })
   log(404)
-})
+}
+
+const server = TLS
+  ? https.createServer({ cert: TLS.cert, key: TLS.key }, requestHandler)
+  : http.createServer(requestHandler)
 
 // ── 生命周期 ────────────────────────────────────────────────────────────────
 
@@ -943,7 +996,14 @@ process.on('SIGHUP', () => void shutdown('SIGHUP'))
 
 await load()
 server.listen(PORT, HOST, () => {
-  console.log('[sync] %s v%d 监听 http://%s:%d', SYNC_FORMAT, SYNC_VERSION, HOST, PORT)
+  const scheme = TLS ? 'https' : 'http'
+  console.log('[sync] %s v%d 监听 %s://%s:%d', SYNC_FORMAT, SYNC_VERSION, scheme, HOST, PORT)
+  if (TLS) {
+    console.log('[sync] TLS 指纹 SHA-256：%s', TLS.fingerprint)
+    console.log('[sync] 客户端 / 反代用同一条证书做校验；换证书后需要重新配对')
+  } else {
+    console.warn('[sync] ⚠ 当前是明文 HTTP：只建议回环使用，局域网请加 --tls-cert / --tls-key')
+  }
   console.log('[sync] 数据文件 %s', DATA)
   console.log('[sync] 名称 %s（仅本机日志，不再对外返回）', NAME)
   console.log(

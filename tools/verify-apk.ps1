@@ -174,7 +174,7 @@ Test-Ok ($xmltree -match 'networkSecurityConfig') 'manifest 引用了 networkSec
 Test-Ok ($xmltree -notmatch 'usesCleartextTraffic') 'usesCleartextTraffic 已移除（不与配置文件互相误导）'
 
 $nsc = (& (Join-Path $Bt 'aapt2.exe') dump xmltree $Apk --file res/xml/network_security_config.xml 2>&1) -join [Environment]::NewLine
-Test-Ok ($nsc -match 'cleartextTrafficPermitted=true') 'cleartextTrafficPermitted=true（局域网 http 才通）'
+Test-Ok ($nsc -match 'cleartextTrafficPermitted=false') 'cleartextTrafficPermitted=false（同步已走 HTTPS）'
 Test-Ok ($nsc -match 'src="system"') '信任锚只有系统 CA（https 没有被放宽）'
 Test-Ok ($nsc -notmatch 'src="user"|src="debug') '没有引入用户/调试 CA'
 

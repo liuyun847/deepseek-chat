@@ -13,6 +13,8 @@ build/
 tmp/
 # 多端同步服务的本地数据文件（sync-server/server.mjs --data 的默认位置）
 sync-server/data/
+# 自签 TLS 证书与私钥（sync-server/gen-cert.mjs 生成）
+sync-server/tls/
 # APK 产物（tools/build-apk.ps1 输出，中间产物落在 build/）
 dist-apk/
 # 签名私钥：绝不可提交。丢了它就无法覆盖升级已安装的应用

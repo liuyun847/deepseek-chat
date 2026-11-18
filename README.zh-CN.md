@@ -50,16 +50,19 @@ API Key、设置和系统提示词库保存在浏览器 localStorage，会话及
 启动服务（Node.js 22+，只需要内置模块）。Windows 上直接用下面两个脚本：幂等，且只有 `GET /api/health` 报出 `format=chat-demo-sync` 才返回 0：
 
 ```powershell
-.\sync-server\start.ps1                      # 启动（隐藏窗口，端口 7788；用 -Port 或 SYNC_PORT 改）
+node sync-server\gen-cert.mjs                # 首次：生成自签证书到 sync-server\tls\
+.\sync-server\start.ps1                      # 启动（HTTPS，隐藏窗口，端口 7788；用 -Port 或 SYNC_PORT 改）
 .\sync-server\stop.ps1                       # 按端口停止，幂等
-node sync-server/server.mjs --port 7788      # 或前台跑，看服务自己的输出
+node sync-server/server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-server\tls\key.pem  # 或前台跑，看服务输出
 ```
 
 日志：`sync-server\logs\start.log`（启停结果）。服务本身只往 stdout 写，start.ps1 刻意不做重定向（原因写在 start.ps1 文件头：一旦重定向，长驻的 node 会占住开机自启的 stderr 文件，下次登录那次自启就变成静默空转）。
 
-默认只监听 `127.0.0.1`，数据写在 `sync-server/data/sync-data.json`；局域网内其它设备要连时用 `--host 0.0.0.0`，并把本机 IP 填进客户端。客户端在 设置 → 多端同步 里填服务地址（例如 `http://127.0.0.1:7788`）、设备名，然后「测试连接」→「立即同步」。
+默认只监听 `127.0.0.1`，数据写在 `sync-server/data/sync-data.json`；局域网内其它设备要连时用 `--host 0.0.0.0`，保留 TLS、配 `--token`，并把本机 HTTPS 地址填进客户端。客户端在 设置 → 多端同步 里填服务地址（例如 `https://192.168.1.5:7788`）、设备名，然后「测试连接」→「立即同步」。非回环的明文 `http://` 地址会被客户端拒绝。
 
-由 `local-server` 托管的浏览器页面（见下一节）可以**留空**：同步自动走同源 `/sync/api/*`，由本机服务转发到 `127.0.0.1:7788`，于是手机同步来的会话零配置就能看到。填了地址则优先用填的那台。
+本机 Web 服务通过 `SYNC_CA_FILE` 信任这张自签证书（`local-server/start.ps1` 会自动找 `sync-server/tls/cert.pem`）；浏览器只访问回环页面，看不到自签证书。页面上的地址留空即可走同源 `/sync/api/*`，由本机服务转发到 `https://127.0.0.1:7788`。
+
+由 `local-server` 托管的浏览器页面（见下一节）可以**留空**：同步自动走同源 `/sync/api/*`，由本机服务转发到 `https://127.0.0.1:7788`，于是手机同步来的会话零配置就能看到。填了地址则优先用填的那台。
 
 数据文件被外部更新后**不需要重启 sync-server**：它在 `/api/health`、`/api/state`、`POST /api/sync` 处理前先 stat 一次，发现被别处写过就重读并按 LWW 并进内存——手机 P2P 推来的会话因此立刻能在浏览器看到。
 
@@ -143,7 +146,7 @@ pnpm --config.shell-emulator=true build:web   # 构建不含内置 key 的前端
 - key 来源：环境变量 `DS_API_KEY` 优先，其次 `.secrets\api-key.txt`（单行，已被 .gitignore 忽略）。两处都没有时服务照常启动，静态页面能开，代理路由返回 503 并说明怎么配；`GET /api/health` 里只有 `keyConfigured: true/false`，不回显 key。
 - 为什么 key 不进前端：`dist/` 是明文静态资源，谁拿到 JS 谁就拿到 key。所以网页版改成「浏览器不带鉴权头，服务端注入 `x-api-key`」：`src/services/localService.ts` 启动时探测 `GET /api/health`，命中就改用相对路径 `/anthropic/...`；APK（`https://dsapp.local`）与 `file://` 下探测直接为 false，行为与以前一致，不需要第二套构建产物。
 - 跨站防护：代理路由校验 `Origin`（存在且与本服务不同源 → 403，挡「任意网页借 127.0.0.1 白嫖 key」）与 `Host`（只认回环，挡 DNS rebinding）；请求体上限 20 MB，超限 413（同步路由是 32 MB，与 sync-server 一致）。
-- 同步路由：`/sync/api/{health,state,sync}` → `http://127.0.0.1:7788/api/{health,state,sync}`，方法、请求体与口令头原样透传，不注入任何凭据；`SYNC_UPSTREAM` 只允许指向回环地址。同步服务没起来时这条路由回 **502** 并带中文原因（`{"error":{"type":"sync_upstream_down",…}}`），设置页显示「同步服务未启动」而不是裸 fetch 错。它刻意不直接读 `sync-server/data/sync-data.json`：那份 JSON 已有两个写者（7788 与 lan-peer），再加一个会静默覆盖别人刚写的记录。
+- 同步路由：`/sync/api/{health,state,sync}` → `https://127.0.0.1:7788/api/{health,state,sync}`，方法、请求体与口令头原样透传，不注入任何凭据；`SYNC_UPSTREAM` 只允许指向回环地址。上游是自签证书时用 `SYNC_CA_FILE`（推荐）或 `SYNC_FINGERPRINT` 做校验。同步服务没起来时这条路由回 **502** 并带中文原因（`{"error":{"type":"sync_upstream_down",…}}`），设置页显示「同步服务未启动」而不是裸 fetch 错。
 - 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-web.vbs` 用无窗口的 Windows PowerShell 5.1 调 `local-server\start.ps1`（与 `dsh-desktop-autostart.vbs` 同一套范式：双日志、改扩展名即禁用）。关掉自启就把该文件改名成 `.vbs.disabled`。日志在 `local-server\logs\`：`start.log`（启停结果）、`server.log`（服务日志，2 MB 轮转）。
 - 用默认 `build`（带 key）的产物起服务时，页面顶部会出现一条可关闭的黄色提示条「当前页面携带内置 API Key，仅建议本机自用」——提醒这份产物把 key 发给每个能打开页面的人；`build:web` 的产物没有这条。
 - ⚠ `build:web` 产出的 `dist/` **不含 key**。打 APK 前必须用默认的 `pnpm --config.shell-emulator=true build` 重新构建，否则 `tools\build-apk.ps1` 第 0 步会拦住并提示这条命令（不会静默打出一个没 key 的包）。

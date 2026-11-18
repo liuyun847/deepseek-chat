@@ -25,16 +25,20 @@ export class SyncError extends Error {
   }
 }
 
-/** 服务地址：允许省略协议（补 http://），去掉结尾斜杠 */
+/** 服务地址：允许省略协议（补 https://），去掉结尾斜杠 */
 export const normalizeServerUrl = (input: string): string | null => {
   const trimmed = input.trim()
   if (!trimmed) {
     return null
   }
-  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : 'http://' + trimmed
+  const withScheme = /^https?:\/\//i.test(trimmed) ? trimmed : 'https://' + trimmed
   try {
     const url = new URL(withScheme)
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null
+    }
+    // 明文只允许回环（本机调试）；局域网/公网地址一律要求 HTTPS
+    if (url.protocol === 'http:' && !isLoopbackHostname(url.hostname)) {
       return null
     }
     return (url.origin + url.pathname).replace(/\/+$/, '')
@@ -200,6 +204,10 @@ export type HealthInfo = {
   /** 服务端提示词条数（活记录，不含墓碑） */
   prompts: number
   dataFile: string
+  /** 服务端是否启用了 HTTPS */
+  tls: boolean
+  /** 自签证书的 SHA-256 指纹；未启用 TLS 时 null */
+  tlsFingerprint: string | null
 }
 
 /** 把 JSON 里的 records 数组校验成记录列表；不合法条目直接丢掉并在 reason 里体现 */
@@ -247,6 +255,8 @@ export const fetchHealth = async (serverUrl: string): Promise<HealthInfo> => {
     settings: typeof body.settings === 'number' ? body.settings : 0,
     prompts: typeof body.prompts === 'number' ? body.prompts : 0,
     dataFile: typeof body.dataFile === 'string' ? body.dataFile : '',
+    tls: body.tls === true,
+    tlsFingerprint: typeof body.tlsFingerprint === 'string' ? body.tlsFingerprint : null,
   }
 }
 

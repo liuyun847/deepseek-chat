@@ -1,11 +1,30 @@
 # sync-server（多端同步服务，M1）
 
-零依赖的本地同步服务：只用 Node.js 内置模块（`node:http` / `node:fs` / `node:path`）。
-数据存成一个 JSON 文件，客户端通过 HTTP 拉全量、推变更。
+零依赖的本地同步服务：只用 Node.js 内置模块（`node:http` / `node:https` / `node:fs` / `node:path`）。
+数据存成一个 JSON 文件，客户端通过 HTTPS 拉全量、推变更。
+
+## HTTPS（默认建议）
+
+首次运行先生成一张自签证书（需要 PATH 里有 `openssl`）：
+
+```powershell
+node sync-server\gen-cert.mjs
+```
+
+证书与私钥落在 `sync-server\tls\`（已被 `.gitignore` 忽略）。然后把两者传给服务：
+
+```powershell
+node sync-server\server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-server\tls\key.pem
+```
+
+服务会在启动日志里打印证书 SHA-256 指纹，并把它放进 `GET /api/health` 的 `tlsFingerprint`。
+客户端用同一个证书做校验（`SYNC_CA_FILE`）或指纹固定（`SYNC_FINGERPRINT`）。
+不传 `--tls-cert/--tls-key` 时仍可跑明文 HTTP，但只建议回环调试；局域网明文会打印警告。
 
 ## 启动
 
-Windows 上建议用脚本（幂等；只有 `GET /api/health` 报出 `format=chat-demo-sync` 才返回 0）：
+Windows 上建议用脚本（幂等；只有 `GET /api/health` 报出 `format=chat-demo-sync` 才返回 0）。
+`start.ps1` 会优先使用 `tls\cert.pem` + `tls\key.pem`，缺失时尝试自动生成：
 
 ```powershell
 .\sync-server\start.ps1        # 隐藏窗口启动，默认 127.0.0.1:7788；-Port / SYNC_PORT 改端口
@@ -19,14 +38,12 @@ Windows 上建议用脚本（幂等；只有 `GET /api/health` 报出 `format=ch
 手动前台运行（能直接看到服务日志）：
 
 ```sh
-# 默认：127.0.0.1:7788，数据写 sync-server/data/sync-data.json
-node sync-server/server.mjs
+# HTTPS：自签证书
+node sync-server/server.mjs --tls-cert sync-server/tls/cert.pem --tls-key sync-server/tls/key.pem
 
-# 指定端口 / 数据文件 / 局域网监听
-node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0
-
-# 开访问口令（推荐：监听 0.0.0.0 时一定开）
-node sync-server/server.mjs --host 0.0.0.0 --token <口令>
+# 指定端口 / 数据文件 / 局域网监听（局域网务必配 TLS + token）
+node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 \
+  --tls-cert sync-server/tls/cert.pem --tls-key sync-server/tls/key.pem --token <口令>
 ```
 
 | 参数 | 环境变量 | 默认值 | 说明 |
@@ -36,6 +53,8 @@ node sync-server/server.mjs --host 0.0.0.0 --token <口令>
 | `--data` | `SYNC_DATA` | `sync-server/data/sync-data.json` | 数据文件（相对路径按当前工作目录解析） |
 | `--name` | `SYNC_NAME` | 主机名 | 只在服务端日志里显示，不再对外返回 |
 | `--token` | `SYNC_TOKEN` | 空（不鉴权） | 访问口令；设了之后 `/api/*` 必须带 `Authorization: Bearer <口令>` 或 `X-Sync-Token` |
+| `--tls-cert` | `SYNC_TLS_CERT` | 空 | PEM 证书路径；与 `--tls-key` 同时给时启用 HTTPS |
+| `--tls-key` | `SYNC_TLS_KEY` | 空 | PEM 私钥路径；与 `--tls-cert` 同时给时启用 HTTPS |
 | `--allow-origin` | `SYNC_ALLOWED_ORIGINS` | 空 | 额外放行的跨域来源，逗号分隔，可重复给 |
 | `--no-webview-origin` | — | 未给（= 放行） | 去掉 Android 外壳的 `https://dsapp.local` 来源 |
 
@@ -45,7 +64,7 @@ node sync-server/server.mjs --host 0.0.0.0 --token <口令>
 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
-| GET | `/api/health` | — | `{ ok, format, version, time, tokenRequired, records, sessions, messages, prompts, settings, tombstones }`（不含主机名与数据文件路径） |
+| GET | `/api/health` | — | `{ ok, format, version, time, tokenRequired, tls, tlsFingerprint, records, sessions, messages, prompts, settings, tombstones }`（不含主机名与数据文件路径） |
 | GET | `/api/state` | — | `{ ok, format, version, time, records: SyncRecord[] }`（全量，含墓碑） |
 | POST | `/api/sync` | `{ device, records }` | `{ ok, applied: { accepted, rejected }, collapsed, records: SyncRecord[] }`（合并后的全量） |
 | GET | `/` | — | 自报身份与端点清单 |
@@ -58,8 +77,9 @@ node sync-server/server.mjs --host 0.0.0.0 --token <口令>
 诊断命令与验收（复制即可跑，期望值写在注释里）：
 
 ```sh
-curl http://127.0.0.1:7788/api/health
-curl http://127.0.0.1:7788/api/state
+# 下面假设已生成 sync-server/tls/cert.pem，并且服务以 --tls-cert/--tls-key 启动
+curl --cacert sync-server/tls/cert.pem https://127.0.0.1:7788/api/health
+curl --cacert sync-server/tls/cert.pem https://127.0.0.1:7788/api/state
 
 # ① 同源来源：200，且带 Access-Control-Allow-Origin
 curl -s -D - -o NUL -H "Origin: http://127.0.0.1:7788" http://127.0.0.1:7788/api/state

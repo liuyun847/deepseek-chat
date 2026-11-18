@@ -210,9 +210,9 @@ export const en = {
   systemPromptSearchClear: 'Clear search',
   settingDialogAsideSyncOptionLabel: 'Multi-device sync',
   syncServerLabel: 'Sync server URL',
-  syncServerPlaceholder: 'http://127.0.0.1:7788',
+  syncServerPlaceholder: 'https://192.168.1.5:7788',
   syncServerDescription:
-    'Address of the machine running sync-server. For other devices on the LAN, use that machine IP and port.',
+    'HTTPS address of the machine running sync-server. For other devices on the LAN, use that machine IP and port. Non-loopback addresses must use HTTPS.',
   syncServerSameOrigin:
     'Leave it empty to use this page\u2019s own origin: {url} (the local service forwards it to 127.0.0.1:7788, where phone-synced data lives). A typed address always wins.',
   syncTest: 'Test connection',

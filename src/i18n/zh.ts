@@ -197,9 +197,9 @@ export const zh = {
   systemPromptSearchClear: '清空搜索',
   settingDialogAsideSyncOptionLabel: '多端同步',
   syncServerLabel: '同步服务地址',
-  syncServerPlaceholder: 'http://127.0.0.1:7788',
+  syncServerPlaceholder: 'https://192.168.1.5:7788',
   syncServerDescription:
-    '填跑着 sync-server 的那台机器的地址；局域网内其它设备同步时，填那台机器的 IP 和端口。',
+    '填跑着 sync-server 的那台机器的 HTTPS 地址；局域网内其它设备同步时，填那台机器的 IP 和端口。非回环地址只接受 HTTPS。',
   syncServerSameOrigin:
     '留空即走本页同源反代：{url}（本机服务转发到 127.0.0.1:7788，手机同步来的数据就在那儿）。填了地址则按填的连。',
   syncTest: '测试连接',

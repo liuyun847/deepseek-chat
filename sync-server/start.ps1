@@ -1,10 +1,15 @@
 ﻿<#
-  start.ps1 — 启动同步服务（sync-server，HTTP 同步；默认 127.0.0.1:7788）
+  start.ps1 — 启动同步服务（sync-server；默认 127.0.0.1:7788）
 
   做三件事：
     1) 已经在跑（/api/health 返回 format=chat-demo-sync）就直接返回 0，不重复启动（幂等）
     2) 否则用 node 以隐藏窗口启动 sync-server\server.mjs --port <端口>
     3) 轮询 /api/health 通了才算成功；失败时打印原因并给出查看日志的办法，退出码 1
+
+  HTTPS：
+    默认优先使用 sync-server\tls\cert.pem + key.pem；文件不存在时尝试调用
+    node sync-server\gen-cert.mjs 生成一次（需要 PATH 里有 openssl）。
+    生成不了就退回 HTTP 并打印警告。也可用 -TlsCert / -TlsKey 显式指定。
 
   只监听回环：不传 --host，server.mjs 默认就是 127.0.0.1。手机走 P2P（lan-peer）不经过它，
   对局域网开放只会多一个读写全库的口子；真要开放得自己加 --host 0.0.0.0 并配 --token。
@@ -31,7 +36,12 @@ param(
     [int]$Port = 0,
 
     # 等 /api/health 就绪的最长秒数
-    [int]$TimeoutSeconds = 15
+    [int]$TimeoutSeconds = 15,
+
+    # TLS 证书/私钥；留空则用 tls\cert.pem + tls\key.pem 或自动生成
+    [string]$TlsCert = '',
+
+    [string]$TlsKey = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -70,12 +80,38 @@ if ($Port -le 0) {
     }
 }
 
+# ── HTTPS ───────────────────────────────────────────────────────────────────
+if (-not $TlsCert) { $TlsCert = Join-Path $ServerDir 'tls\cert.pem' }
+if (-not $TlsKey) { $TlsKey = Join-Path $ServerDir 'tls\key.pem' }
+if (-not $env:SYNC_TLS_CERT -and -not $env:SYNC_TLS_KEY) {
+    if (-not ((Test-Path -LiteralPath $TlsCert) -and (Test-Path -LiteralPath $TlsKey))) {
+        $genScript = Join-Path $ServerDir 'gen-cert.mjs'
+        $nodeForCert = Get-Command node -ErrorAction SilentlyContinue
+        if ($nodeForCert -and (Test-Path -LiteralPath $genScript)) {
+            Write-LogLine '未找到 TLS 证书，尝试生成一次（需要 openssl）'
+            & $nodeForCert.Source $genScript 2>&1 | ForEach-Object { Write-LogLine ([string]$_) }
+        }
+    }
+}
+$UseTls = (Test-Path -LiteralPath $TlsCert) -and (Test-Path -LiteralPath $TlsKey)
+$Scheme = if ($UseTls) { 'https' } else { 'http' }
+if ($UseTls) {
+    Write-LogLine ('HTTPS 已启用：{0}' -f $TlsCert)
+    # 自签证书只用于本机回环健康检查；这个进程只跑几秒，回调不会影响别的连接
+    try {
+        [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    } catch { }
+} else {
+    Write-LogLine '警告：没有可用 TLS 证书，退回 HTTP（局域网使用请先运行 node sync-server\gen-cert.mjs）'
+}
+
 # 取 /api/health；不通时返回 $null（不抛异常）
 function Get-Health {
     param([int]$ListenPort)
     try {
         $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 `
-            -Uri ('http://127.0.0.1:{0}/api/health' -f $ListenPort)
+            -Uri ('{0}://127.0.0.1:{1}/api/health' -f $Scheme, $ListenPort)
         if ($response.StatusCode -ne 200) { return $null }
         return ($response.Content | ConvertFrom-Json)
     } catch {
@@ -104,7 +140,7 @@ Write-LogLine ('=== start.ps1 开始（端口 {0}）===' -f $Port)
 $health = $null
 if (Test-PortBusy -ListenPort $Port) { $health = Get-Health -ListenPort $Port }
 if ($health -and $health.format -eq $SyncFormat) {
-    Write-LogLine ('已在运行：http://127.0.0.1:{0}/api/health （format={1}，记录 {2} 条，会话 {3} 个）' -f $Port, $health.format, $health.records, $health.sessions)
+    Write-LogLine ('已在运行：{0}://127.0.0.1:{1}/api/health （format={2}，记录 {3} 条，会话 {4} 个）' -f $Scheme, $Port, $health.format, $health.records, $health.sessions)
     Write-LogLine '无需重复启动（幂等），退出码 0'
     exit 0
 }
@@ -128,11 +164,16 @@ if (-not $nodeCmd) {
 }
 $nodePath = $nodeCmd.Source
 
-Write-LogLine ('启动：{0} {1} --port {2}' -f $nodePath, $serverScript, $Port)
+Write-LogLine ('启动：{0} {1} --port {2}（{3}）' -f $nodePath, $serverScript, $Port, $Scheme)
 Write-LogLine ('工作目录 {0}，隐藏窗口；不带 -Redirect（见文件头：避免长驻 node 占住自启的 stderr 文件）' -f $ServerDir)
 
+$argList = @(('"' + $serverScript + '"'), '--port', [string]$Port)
+if ($UseTls) {
+    $argList += @('--tls-cert', ('"' + $TlsCert + '"'), '--tls-key', ('"' + $TlsKey + '"'))
+}
+
 try {
-    $proc = Start-Process -FilePath $nodePath -ArgumentList @(('"' + $serverScript + '"'), '--port', [string]$Port) `
+    $proc = Start-Process -FilePath $nodePath -ArgumentList $argList `
         -WorkingDirectory $ServerDir -WindowStyle Hidden -PassThru
 } catch {
     Write-LogLine ('失败：Start-Process 出错：' + $_.Exception.Message)
@@ -162,8 +203,9 @@ if (-not ($health -and $health.format -eq $SyncFormat)) {
     exit 1
 }
 
-Write-LogLine ('就绪：http://127.0.0.1:{0}/api/health （PID {1}，format={2}，记录 {3} 条，会话 {4} 个）' -f $Port, $proc.Id, $health.format, $health.records, $health.sessions)
+Write-LogLine ('就绪：{0}://127.0.0.1:{1}/api/health （PID {2}，format={3}，记录 {4} 条，会话 {5} 个）' -f $Scheme, $Port, $proc.Id, $health.format, $health.records, $health.sessions)
 Write-LogLine '页面侧：浏览器打开 http://127.0.0.1:7789 后，同步地址留空即经 /sync/api 用本服务'
+Write-LogLine ('本机服务反代：设置 SYNC_UPSTREAM={0}://127.0.0.1:{1} 并配 SYNC_CA_FILE={2}' -f $Scheme, $Port, $TlsCert)
 Write-LogLine '停止：.\sync-server\stop.ps1'
 Write-LogLine '=== start.ps1 结束（成功）==='
 exit 0
