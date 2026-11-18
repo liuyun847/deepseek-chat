@@ -69,6 +69,27 @@ node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 
 | POST | `/api/sync` | `{ device, records }` | `{ ok, applied: { accepted, rejected }, collapsed, records: SyncRecord[] }`（合并后的全量） |
 | GET | `/` | — | 自报身份与端点清单 |
 
+## 组与配对
+
+组信息存在数据文件同目录的 `group.json`（设备令牌只存 SHA-256，配对码一次性、10 分钟有效）。
+创建组后，除 `GET /api/health`、`GET /api/group`、`POST /api/group/join` 外，`/api/state` 与 `/api/sync`
+都需要设备令牌（`Authorization: Bearer <deviceToken>` 或 `X-Sync-Token`）。
+
+| 方法 | 路径 | 请求 | 响应 |
+| --- | --- | --- | --- |
+| GET | `/api/group` | — | `{ ok, group }`；未建组时 `group: null` |
+| POST | `/api/group/create` | `{ device, name, groupName?, canHost? }` | `{ ok, group, deviceToken, invite:{ code, expiresAt } }`，仅未建组时可用 |
+| POST | `/api/group/join` | `{ code, device, name, canHost? }` | `{ ok, group, deviceToken }`；配对码一次性 |
+| POST | `/api/group/invite` | 需令牌 | `{ ok, invite:{ code, expiresAt } }`，仅主机 |
+| POST | `/api/group/host` | `{ device, targetDeviceId, epoch }` + 令牌 | `{ ok, group }`；epoch 不匹配回 409 |
+| POST | `/api/group/revoke` | `{ targetDeviceId }` + 主机令牌 | `{ ok, group }`；不能移除主机自己 |
+
+`POST /api/sync` 可带 `epoch`；带旧 epoch 会回 409 `{ error:'epoch_stale', group }`，客户端刷新组信息后重试。
+健康检查额外返回 `groupId`、`groupName`、`hostDeviceId`、`groupEpoch`、`groupDevices`。
+
+> 主机是组内的管理角色；数据服务仍然由运行 `sync-server` 的那台机器提供。手机可以加入组、被指定为主机，
+> 但要让手机真正提供同步服务，需要在 APK 里增加原生 host 运行时（见后续工作）。
+
 `OPTIONS` 返回 204 + CORS 头，允许 `GET` / `POST` / `Content-Type` / `Authorization` / `X-Sync-Token`；
 来源通过白名单才回显 `Origin`，不通过直接 403 且不回任何 CORS 头（见下节「访问控制」）。
 设了口令后 `/api/*` 缺失或错误口令回 401。
