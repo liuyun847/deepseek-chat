@@ -47,7 +47,7 @@ export const FONT_SCALE_OPTIONS: { value: FontScale; label: TranslationKey }[] =
 ]
 
 /** 多端同步的默认服务地址：与 `sync-server/server.mjs` 的默认端口一致 */
-export const DEFAULT_SYNC_SERVER = 'http://127.0.0.1:7788'
+export const DEFAULT_SYNC_SERVER = 'https://127.0.0.1:7788'
 
 /**
  * 本机设置，存 localStorage：API Key、语言、主题、字号、位置、模型、推理强度、

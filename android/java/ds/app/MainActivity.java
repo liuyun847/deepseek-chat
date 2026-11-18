@@ -5,6 +5,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.res.Configuration;
 import android.net.Uri;
+import android.net.http.SslError;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,6 +16,7 @@ import android.view.Window;
 import android.webkit.ConsoleMessage;
 import android.webkit.DownloadListener;
 import android.webkit.JavascriptInterface;
+import android.webkit.SslErrorHandler;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebChromeClient.FileChooserParams;
@@ -33,6 +35,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -122,6 +126,12 @@ public class MainActivity extends Activity {
      */
     private LanLink lan;
 
+    /**
+     * 同步服务证书的 SHA-256 指纹（小写十六进制、无冒号）。
+     * 由配对流程通过 __DS_BRIDGE__.setSyncTlsPin 写入；空串表示没有固定，HTTPS 一律拒绝。
+     */
+    private String syncTlsPin = "";
+
     /** 待落盘的内容（用户还在系统文件选择器里挑位置时暂存）。 */
     private volatile byte[] pendingBytes = null;
     private volatile String pendingName = "";
@@ -147,6 +157,7 @@ public class MainActivity extends Activity {
         //   adb shell am start -n ds.app/.MainActivity --ez debug true
         // 打开后 WebView 可用 chrome://inspect 调试，JS 控制台也会转到 logcat（tag: DSApp）
         debugMode = getIntent() != null && getIntent().getBooleanExtra("debug", DEBUG_DEFAULT);
+        syncTlsPin = getSharedPreferences("dsapp", MODE_PRIVATE).getString("sync_tls_pin", "");
 
         web = new WebView(this);
         setContentView(web, new ViewGroup.LayoutParams(
@@ -180,6 +191,34 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest req) {
                 return serveAsset(req.getUrl());
+            }
+
+            /**
+             * 自签证书固定：只有指纹与配对时记录的一致才放行。
+             *
+             * 不能用「用户点继续」的通用 SSL 错误弹窗：那等于放弃校验。
+             * 指纹在配对时由页面通过 __DS_BRIDGE__.setSyncTlsPin 写入，
+             * 没有指纹时直接取消（不允许 TOFU）。
+             */
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                if (!syncTlsPin.isEmpty()) {
+                    try {
+                        X509Certificate cert = error.getCertificate().getX509Certificate();
+                        byte[] digest = MessageDigest.getInstance("SHA-256").digest(cert.getEncoded());
+                        StringBuilder hex = new StringBuilder(digest.length * 2);
+                        for (byte b : digest) {
+                            hex.append(String.format("%02x", b));
+                        }
+                        if (syncTlsPin.equals(hex.toString())) {
+                            handler.proceed();
+                            return;
+                        }
+                    } catch (Exception e) {
+                        bridgeLog("校验同步证书失败：" + e);
+                    }
+                }
+                handler.cancel();
             }
 
             @Override
@@ -559,6 +598,33 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public String platform() {
             return "android";
+        }
+
+        /**
+         * 记录同步服务证书指纹；配对流程拿到二维码里的 SHA-256 后调用。
+         *
+         * @param fingerprint 64 位十六进制，可带冒号/空格；空串表示清除
+         */
+        @JavascriptInterface
+        public void setSyncTlsPin(String fingerprint) {
+            String normalized = fingerprint == null
+                    ? ""
+                    : fingerprint.replace(":", "").replace(" ", "").trim().toLowerCase();
+            if (!normalized.isEmpty() && !normalized.matches("[0-9a-f]{64}")) {
+                bridgeLog("忽略非法证书指纹：" + fingerprint);
+                return;
+            }
+            syncTlsPin = normalized;
+            getSharedPreferences("dsapp", MODE_PRIVATE)
+                    .edit()
+                    .putString("sync_tls_pin", normalized)
+                    .apply();
+            bridgeLog(normalized.isEmpty() ? "已清除同步证书指纹" : "已固定同步证书指纹");
+        }
+
+        @JavascriptInterface
+        public String getSyncTlsPin() {
+            return syncTlsPin;
         }
 
         @JavascriptInterface

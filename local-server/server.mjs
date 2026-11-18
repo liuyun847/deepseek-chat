@@ -70,6 +70,22 @@ const LOG_MAX_BYTES = 2 * 1024 * 1024
 const UPSTREAM = 'https://api.deepseek.com'
 /** 同步服务（sync-server）地址：SYNC_UPSTREAM 可改，测试时指向临时端口 */
 const SYNC_UPSTREAM_RAW = (process.env.SYNC_UPSTREAM ?? 'http://127.0.0.1:7788').trim()
+/** 上游自签证书的 CA 文件（通常就是 sync-server/tls/cert.pem）；给了就按它校验 */
+const SYNC_CA_FILE = (process.env.SYNC_CA_FILE ?? '').trim()
+/** 上游证书 SHA-256 指纹（可带冒号）；给了就做固定校验（会关闭链校验，适合自签） */
+const SYNC_FINGERPRINT = (process.env.SYNC_FINGERPRINT ?? '').replace(/:/g, '').trim().toLowerCase()
+/** 读一次 CA；读不到直接退出，避免运行时每条同步都失败 */
+const SYNC_CA_PEM = (() => {
+  if (!SYNC_CA_FILE) {
+    return null
+  }
+  try {
+    return readFileSync(SYNC_CA_FILE, 'utf8')
+  } catch (error) {
+    process.stderr.write('读取 SYNC_CA_FILE 失败：' + SYNC_CA_FILE + '（' + error.message + '）\n')
+    process.exit(1)
+  }
+})()
 /**
  * 同步反代前缀：浏览器打同源 /sync/api/*，本服务把这段前缀换成上游的 /api/*。
  * 前端（src/services/sync/api.ts）把同源服务地址算成 http://127.0.0.1:<port>/sync，
@@ -701,16 +717,34 @@ const proxyToSync = (req, res, upstreamPath) => {
    */
   const sendToSync = (body) => {
     const requestModule = syncUpstream.protocol === 'https:' ? httpsRequest : httpRequest
+    const options = {
+      protocol: syncUpstream.protocol,
+      hostname: syncUpstream.hostname,
+      port: syncUpstream.port,
+      method: req.method,
+      path: upstreamPath,
+      headers: { ...headers, 'content-length': String(body.length) },
+      timeout: SYNC_TIMEOUT_MS,
+    }
+    if (syncUpstream.protocol === 'https:') {
+      // 自签证书两种校验方式：CA 文件（推荐，链校验仍然开启）或精确指纹
+      if (SYNC_CA_PEM) {
+        options.ca = SYNC_CA_PEM
+      }
+      if (SYNC_FINGERPRINT) {
+        options.rejectUnauthorized = false
+        options.checkServerIdentity = (_host, cert) => {
+          const actual = String(cert?.fingerprint256 ?? '')
+            .replace(/:/g, '')
+            .toLowerCase()
+          return actual === SYNC_FINGERPRINT
+            ? undefined
+            : new Error('同步服务证书指纹不匹配')
+        }
+      }
+    }
     const upstreamReq = requestModule(
-      {
-        protocol: syncUpstream.protocol,
-        hostname: syncUpstream.hostname,
-        port: syncUpstream.port,
-        method: req.method,
-        path: upstreamPath,
-        headers: { ...headers, 'content-length': String(body.length) },
-        timeout: SYNC_TIMEOUT_MS,
-      },
+      options,
       (upstreamRes) => {
         const responseHeaders = {}
         for (const [name, value] of Object.entries(upstreamRes.headers)) {
@@ -992,6 +1026,13 @@ server.on('error', (error) => {
 server.listen(port, host, () => {
   log('info', '本机服务已启动：http://' + host + ':' + port + '（上游 ' + UPSTREAM + '）')
   log('info', '同步反代 ' + SYNC_PREFIX + '/* → ' + syncUpstream.origin + '/api/*')
+  if (syncUpstream.protocol === 'https:') {
+    log(
+      'info',
+      '同步上游 TLS：' +
+        (SYNC_FINGERPRINT ? '指纹固定' : SYNC_CA_PEM ? 'CA 文件校验' : '系统信任链')
+    )
+  }
   log('info', '静态目录 ' + DIST + '（' + (distReady ? '就绪' : '缺少 index.html：先跑 pnpm build:web') + '）')
   log(
     'info',
