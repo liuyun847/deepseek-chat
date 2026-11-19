@@ -3,7 +3,7 @@
 零依赖的本地同步服务：只用 Node.js 内置模块（`node:http` / `node:https` / `node:fs` / `node:path`）。
 数据存成一个 JSON 文件，客户端通过 HTTPS 拉全量、推变更。
 
-## HTTPS（默认建议）
+## HTTPS 与证书指纹（自签证书怎么配对）
 
 首次运行先生成一张自签证书（需要 PATH 里有 `openssl`）：
 
@@ -17,9 +17,67 @@ node sync-server\gen-cert.mjs
 node sync-server\server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-server\tls\key.pem
 ```
 
-服务会在启动日志里打印证书 SHA-256 指纹，并把它放进 `GET /api/health` 的 `tlsFingerprint`。
-客户端用同一个证书做校验（`SYNC_CA_FILE`）或指纹固定（`SYNC_FINGERPRINT`）。
-不传 `--tls-cert/--tls-key` 时仍可跑明文 HTTP，但只建议回环调试；局域网明文会打印警告。
+不传 `--tls-cert/--tls-key` 时仍可跑明文 HTTP（行为与以前完全一致），但只建议回环调试；
+局域网明文会在启动时打印警告。
+
+### 指纹是什么、从哪看
+
+服务端用「证书 DER 的 SHA-256」当唯一身份，格式固定为 **64 位小写十六进制、无分隔符**
+（唯一实现在 `sync-server/cert-fingerprint.mjs`，与 Android `MainActivity.onReceivedSslError`
+的判据逐字节等价）。同一个值有四处能看到，内容完全一致：
+
+| 位置 | 说明 |
+| --- | --- |
+| 启动日志 | `[sync] 证书 SHA-256 指纹：…`（只打印指纹，私钥与证书内容一律不打印） |
+| `node sync-server/gen-cert.mjs` | 生成与复用证书时都会打印 |
+| `GET /api/health`、`GET /` 的 `certFingerprint` | 明文 HTTP 下为 `null`；旧字段名 `tlsFingerprint` 同值保留（向后兼容） |
+| `POST /api/group/create`、`POST /api/group/invite` 的 `certFingerprint` | 只有管理端/主机走得到（沿用现有权限模型）；电脑上的页面靠它显示并复制 |
+
+> 手机在固定指纹之前**连不上**本服务：WebView 对自签证书直接 `handler.cancel()`，
+> 不允许 TOFU。所以手机拿不到接口里的指纹 —— 它必须人工抄/扫码带入。
+> 接口里那份是给电脑页面显示与复制用的。
+
+### 手机怎么带入（第一次配对）
+
+1. 电脑上 `node sync-server\gen-cert.mjs`（或 `start.ps1`，它会在缺证书时自动生成），
+   从输出里抄下 64 位指纹；也可以在 `local-server` 托管的页面里
+   设置 → 多端同步 →「测试连接」，读回服务端上报的指纹并用同一行的「复制」按钮复制。
+2. 手机 APK → 设置 → 多端同步：
+   - 服务地址填 `https://<电脑IP>:7788`（非回环地址只接受 HTTPS）；
+   - 在「服务端证书指纹」一行粘贴那 64 位指纹 → 点「保存指纹」（可带冒号/空格与大小写，
+     会被规范成小写无分隔符）。它通过 `window.__dsSync.setTlsPin()` →
+     `Bridge.setSyncTlsPin` 写进原生 SharedPreferences，**进程重启后仍然有效**。
+3. 再点「测试连接」，通了再创建组或用配对码加入。
+4. 电脑建组后点「生成配对码」，页面会把指纹一并显示在配对码下面，方便再抄一次。
+
+没固定指纹时的表现是可预期的（不是一句含糊的「连不上」）：
+
+- 「服务端证书指纹」一行直接显示红字：
+  「本机还没固定这个服务的证书指纹，自签 HTTPS 会被系统直接拒绝。请到运行 sync-server 的电脑上看启动日志或设置页里的指纹，复制过来填上，再点「测试连接」。」
+- 点「测试连接」/「立即同步」/「创建组」/「加入组」会直接报
+  「本机还没有固定这个同步服务的证书指纹…」—— 判断在发请求之前就做了，不会撞一个 TLS 失败。
+- 浏览器里没有指纹桥：这一行会显示「浏览器里没有证书固定能力…」，复制按钮照常可用
+  （网页同步由本机服务校验 CA 或浏览器信任链负责，见根目录 README）。
+
+### 证书轮换（换 IP、换主机名、过期重签）
+
+1. `node sync-server\gen-cert.mjs --force` 重新生成（或删掉 `sync-server\tls\` 后重跑）。
+2. 指纹随之改变 —— 每台手机里旧的 pin 从此不匹配，自签证书会被一律 cancel（同步表现为失败）。
+3. 每台手机重做上面第 2 步：粘贴新指纹 →「保存指纹」。
+4. 反代（`local-server`）用 `SYNC_CA_FILE` 的话换掉 `cert.pem` 即可；用
+   `SYNC_FINGERPRINT` 的要把那串一并改掉。
+
+### 命令行自检（不用手机也能验三条判据）
+
+`tools/tls-pin-sim.mjs` 用 Node 复刻 `onReceivedSslError` 的判断（没有 pin 拒、错 pin 拒、
+对 pin 通），默认打 `/api/health`，退出码区分结论：
+
+```sh
+# 0=accept 2=没有 pin 被拒 3=指纹不匹配被拒
+node tools/tls-pin-sim.mjs --url https://127.0.0.1:7788            # 期望 2
+node tools/tls-pin-sim.mjs --url https://127.0.0.1:7788 --pin <64 位指纹>   # 期望 0
+node tools/tls-pin-sim.mjs --url https://127.0.0.1:7788 --pin 0000...0000  # 期望 3
+```
 
 ## 启动
 
@@ -64,10 +122,10 @@ node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 
 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
-| GET | `/api/health` | — | `{ ok, format, version, time, tokenRequired, tls, tlsFingerprint, records, sessions, messages, prompts, settings, tombstones }`（不含主机名与数据文件路径） |
+| GET | `/api/health` | — | `{ ok, format, version, time, tokenRequired, tls, certFingerprint, tlsFingerprint, records, sessions, messages, prompts, settings, tombstones }`（不含主机名与数据文件路径；`certFingerprint` 在明文 HTTP 下为 `null`，`tlsFingerprint` 是同值旧名） |
 | GET | `/api/state` | — | `{ ok, format, version, time, records: SyncRecord[] }`（全量，含墓碑） |
 | POST | `/api/sync` | `{ device, records }` | `{ ok, applied: { accepted, rejected }, collapsed, records: SyncRecord[] }`（合并后的全量） |
-| GET | `/` | — | 自报身份与端点清单 |
+| GET | `/` | — | 自报身份、`certFingerprint` 与端点清单 |
 
 ## 组与配对
 
@@ -78,14 +136,18 @@ node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
 | GET | `/api/group` | — | `{ ok, group }`；未建组时 `group: null` |
-| POST | `/api/group/create` | `{ device, name, groupName?, canHost? }` | `{ ok, group, deviceToken, invite:{ code, expiresAt } }`，仅未建组时可用 |
+| POST | `/api/group/create` | `{ device, name, groupName?, canHost? }` | `{ ok, group, deviceToken, invite:{ code, expiresAt }, certFingerprint }`，仅未建组时可用 |
 | POST | `/api/group/join` | `{ code, device, name, canHost? }` | `{ ok, group, deviceToken }`；配对码一次性 |
-| POST | `/api/group/invite` | 需令牌 | `{ ok, invite:{ code, expiresAt } }`，仅主机 |
+| POST | `/api/group/invite` | 需令牌 | `{ ok, invite:{ code, expiresAt }, certFingerprint }`，仅主机 |
 | POST | `/api/group/host` | `{ device, targetDeviceId, epoch }` + 令牌 | `{ ok, group }`；epoch 不匹配回 409 |
 | POST | `/api/group/revoke` | `{ targetDeviceId }` + 主机令牌 | `{ ok, group }`；不能移除主机自己 |
 
 `POST /api/sync` 可带 `epoch`；带旧 epoch 会回 409 `{ error:'epoch_stale', group }`，客户端刷新组信息后重试。
 健康检查额外返回 `groupId`、`groupName`、`hostDeviceId`、`groupEpoch`、`groupDevices`。
+
+`create` 与 `invite` 是唯一的「管理端」两条路（前者是建组引导、后者只允许主机调），
+所以自签指纹只在这两处随配对码一起返回；`join` 不带 —— 加入方本来就被配对码鉴权，
+而且它在固定指纹之前根本连不上本服务（原因见上文「HTTPS 与证书指纹」）。
 
 > 主机是组内的管理角色；数据服务仍然由运行 `sync-server` 的那台机器提供。手机可以加入组、被指定为主机，
 > 但要让手机真正提供同步服务，需要在 APK 里增加原生 host 运行时（见后续工作）。

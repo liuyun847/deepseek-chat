@@ -6,6 +6,7 @@ import {
   SYNC_VERSION,
   type SyncRecord,
 } from './protocol.js'
+import { normalizeCertFingerprint } from './tls.js'
 
 /** 单次请求的超时（毫秒）；拉全量可能略慢，推送与探测给同样的时间 */
 const REQUEST_TIMEOUT = 15_000
@@ -222,8 +223,11 @@ export type HealthInfo = {
   dataFile: string
   /** 服务端是否启用了 HTTPS */
   tls: boolean
-  /** 自签证书的 SHA-256 指纹；未启用 TLS 时 null */
-  tlsFingerprint: string | null
+  /**
+   * 服务端自签证书的 SHA-256 指纹（64 位小写十六进制）；未启用 TLS 时 null。
+   * 手机端把它固定下来之后，WebView 才会放行这张自签证书（见 sync/tls.ts）。
+   */
+  certFingerprint: string | null
   /** 组信息；未建组时为 null / 0 */
   groupId: string | null
   groupName: string | null
@@ -278,7 +282,8 @@ export const fetchHealth = async (serverUrl: string, token?: string): Promise<He
     prompts: typeof body.prompts === 'number' ? body.prompts : 0,
     dataFile: typeof body.dataFile === 'string' ? body.dataFile : '',
     tls: body.tls === true,
-    tlsFingerprint: typeof body.tlsFingerprint === 'string' ? body.tlsFingerprint : null,
+    // certFingerprint 是本轮起的规范字段名；tlsFingerprint 是 PR #3 的旧名，读它做兼容
+    certFingerprint: normalizeCertFingerprint(body.certFingerprint ?? body.tlsFingerprint) || null,
     groupId: typeof body.groupId === 'string' ? body.groupId : null,
     groupName: typeof body.groupName === 'string' ? body.groupName : null,
     hostDeviceId: typeof body.hostDeviceId === 'string' ? body.hostDeviceId : null,
@@ -353,7 +358,19 @@ export type GroupInfo = {
 }
 
 export type InviteInfo = { code: string; expiresAt: number }
-export type CreateGroupResult = { group: GroupInfo; deviceToken: string; invite: InviteInfo }
+/**
+ * 建组/生成配对码的返回。
+ * certFingerprint 是服务端证书指纹（HTTP 模式为 null），只有管理端/主机这两条路能拿到：
+ * 电脑上的页面靠它把指纹显示出来给人复制，手机那边人工填入后再配对。
+ */
+export type CreateGroupResult = {
+  group: GroupInfo
+  deviceToken: string
+  invite: InviteInfo
+  certFingerprint: string | null
+}
+/** 生成配对码的结果：码 + 服务端证书指纹 */
+export type InviteResult = { invite: InviteInfo; certFingerprint: string | null }
 export type JoinGroupResult = { group: GroupInfo; deviceToken: string }
 
 /** 校验服务端返回的组结构；字段缺失按协议错误处理 */
@@ -418,6 +435,7 @@ export const createGroup = async (
     group: parseGroup(body.group),
     deviceToken: typeof body.deviceToken === 'string' ? body.deviceToken : '',
     invite: parseInvite(body.invite),
+    certFingerprint: normalizeCertFingerprint(body.certFingerprint) || null,
   }
 }
 
@@ -433,15 +451,21 @@ export const joinGroup = async (
   }
 }
 
-/** 主机生成新的配对码 */
-export const createInvite = async (serverUrl: string, token: string): Promise<InviteInfo> => {
+/** 主机生成新的配对码；同时带回落服务端证书指纹，供界面显示与复制 */
+export const createInvite = async (
+  serverUrl: string,
+  token: string
+): Promise<InviteResult> => {
   const body = asObject(
     await request(serverUrl + '/api/group/invite', {
       token,
       body: { device: 'host' },
     })
   )
-  return parseInvite(body.invite)
+  return {
+    invite: parseInvite(body.invite),
+    certFingerprint: normalizeCertFingerprint(body.certFingerprint) || null,
+  }
 }
 
 /** 更换主机；epoch 用于乐观并发 */

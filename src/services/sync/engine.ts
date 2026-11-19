@@ -22,6 +22,7 @@ import {
 } from './merge.js'
 import { applyPulledLocalRecords, readLocalSyncExtras } from './local.js'
 import { compareRecords, MAX_SYNC_BYTES, recordKey, type SyncRecord } from './protocol.js'
+import { readSyncTlsPin, syncTlsPinAvailable } from './tls.js'
 import { loadLastSync, loadSnapshots, saveLastSync, saveSnapshots, type LastSyncInfo } from './snapshots.js'
 
 /** 同步状态：busy 用于禁用按钮，last 用于展示上次结果（页面打开时从记账库读回） */
@@ -35,6 +36,27 @@ type SyncState = {
 export const useSync = create<SyncState>(() => ({ busy: null, last: null }))
 
 /**
+ * 自签 HTTPS 的前置检查：安卓壳里还没固定指纹就别去连。
+ *
+ * 为什么必须拦在发请求之前：WebView 对自签证书的失败是 TLS 层的，页面拿到的只是一个
+ * 「Failed to fetch」——用户看到的会是「连不上同步服务」，而真正的原因是
+ * onReceivedSslError 里 pin 为空直接 cancel 了（不允许 TOFU）。这里提前给一句能照做的
+ * 中文提示，界面把它显示在「测试连接 / 立即同步」那一行。
+ *
+ * 浏览器里没有指纹桥（syncTlsPinAvailable() 为 false）时直接放行：网页场景由本机服务的
+ * CA 文件校验或浏览器自己的信任链负责，不归这里管。
+ *
+ * @param server 本次要连的服务地址（已规范化）
+ * @throws SyncError('syncErrorTlsPinMissing') https + 安卓壳 + 本机没有指纹
+ */
+const assertSyncTlsPin = (server: string): void => {
+  if (!server.startsWith('https://') || !syncTlsPinAvailable() || readSyncTlsPin()) {
+    return
+  }
+  throw new SyncError('syncErrorTlsPinMissing')
+}
+
+/**
  * 决定这次同步连哪个服务。
  *
  * 顺序：设置里手填的地址优先；没填且本页由本机服务托管时，用同源反代 /sync/api
@@ -43,6 +65,7 @@ export const useSync = create<SyncState>(() => ({ busy: null, last: null }))
  *
  * @returns 规范化后的服务地址
  * @throws SyncError('syncErrorUrl') 既没手填、也不在同源场景
+ * @throws SyncError('syncErrorTlsPinMissing') 安卓壳里连 HTTPS 但还没固定证书指纹
  * @sideeffect 等待一次 localServiceReady（探测只跑一次，已有结果时立即返回）
  */
 const resolveServer = async (): Promise<string> => {
@@ -52,6 +75,8 @@ const resolveServer = async (): Promise<string> => {
   if (!url) {
     throw new SyncError('syncErrorUrl')
   }
+  // 测试连接、首次同步、立即同步三条路都经过这里，指纹检查只写一处
+  assertSyncTlsPin(url)
   return url
 }
 

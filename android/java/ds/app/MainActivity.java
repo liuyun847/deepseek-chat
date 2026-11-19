@@ -601,9 +601,16 @@ public class MainActivity extends Activity {
         }
 
         /**
-         * 记录同步服务证书指纹；配对流程拿到二维码里的 SHA-256 后调用。
+         * 记录同步服务证书指纹（自签 HTTPS 的证书固定）。
          *
-         * @param fingerprint 64 位十六进制，可带冒号/空格；空串表示清除
+         * 调用链：设置页 → shell.js 的 window.__dsSync.setTlsPin()
+         * → window.__DS_BRIDGE__.setSyncTlsPin() → 这里。
+         *
+         * 存储：同时写内存字段与 SharedPreferences("dsapp"/"sync_tls_pin")，
+         * onCreate 时读回来、onReceivedSslError 用同一个值 —— 所以进程被杀再重启仍然有效。
+         * 只存内存的话会表现为「昨天能同步，今天连不上」。
+         *
+         * @param fingerprint 64 位十六进制，可带冒号/空格（会去掉分隔符并转小写）；空串表示清除
          */
         @JavascriptInterface
         public void setSyncTlsPin(String fingerprint) {
