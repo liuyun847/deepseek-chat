@@ -5,10 +5,12 @@
  * 用法
  *   node sync-server/server.mjs [--port 7788] [--host 127.0.0.1] [--data <json 文件>] [--name <名称>]
  *   node sync-server/server.mjs --token <口令> [--allow-origin <来源>]
+ *   node sync-server/server.mjs --host 0.0.0.0 --token <口令> [--public-host <host:port>]
  *   node sync-server/server.mjs --help
  *
  * 环境变量（命令行参数优先）
  *   SYNC_PORT / SYNC_HOST / SYNC_DATA / SYNC_NAME / SYNC_TOKEN / SYNC_ALLOWED_ORIGINS
+ *   SYNC_PUBLIC_HOST
  *
  * 来源与口令（发布前安全审计 BLOCKER-2）
  *   - CORS 只放行三类来源：①回环 host（127.0.0.1 / localhost / [::1]，http，端口不限；
@@ -44,6 +46,20 @@
  *   所以**手机拿指纹只能靠人工/二维码，不能靠它自己请求接口**——接口里的指纹是给
  *   电脑上的页面显示与复制用的。
  *
+ * 二维码配对（配对串）
+ *   POST /api/group/{create,invite} 除 code/expiresAt/certFingerprint 外，再返回一个
+ *   pair 对象：{ uri, host, reachable, reason, candidates }。uri 是自描述串
+ *     deepseek-sync://pair?v=1&h=<host:port>&c=<8位码>&f=<64hex>&x=<unix秒>
+ *   由本服务组装（只有它知道手机能连的地址：网页永远在回环上，见 pair-uri.mjs 文件头），
+ *   页面拿到 uri 后本地画二维码。老的客户端只读 invite.code，多出来的 pair 字段不影响它。
+ *
+ * 对局域网开放（默认不开）
+ *   默认只监听 127.0.0.1。要手机直连必须同时给 --host <非回环> 与 --token：
+ *   **非回环监听且没设口令时本进程拒绝启动**（不是警告），因为那等于把整库会话
+ *   交给局域网里任何一台机器。
+ *   --public-host <host:port> 显式指定「手机该连哪里」，优先于自动枚举网卡；
+ *   反代 / 端口映射 / 域名这些服务端自己推不出来的场景用它。
+ *
  * 存储
  *   一个 JSON 文件，原子写（先写 .tmp 再 rename），写入去抖 200ms，退出前强制落盘。
  *   文件结构：{ format, version, updatedAt, records: { "kind:id": record } }
@@ -60,7 +76,13 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { certFingerprintFromPem } from './cert-fingerprint.mjs'
+import { certFingerprintFromPem, normalizeCertFingerprint } from './cert-fingerprint.mjs'
+import {
+  PAIR_CODE_ALPHABET,
+  buildPairUri,
+  normalizePairHost,
+  resolvePairTarget,
+} from './pair-uri.mjs'
 
 /** 与客户端一致的协议标识与版本；不匹配直接拒绝，避免两套语义互相污染 */
 const SYNC_FORMAT = 'chat-demo-sync'
@@ -109,9 +131,13 @@ if (args.help) {
   console.log(
     [
       '用法: node sync-server/server.mjs [--port 7788] [--host 127.0.0.1] [--data <文件>] [--name <名称>] [--token <口令>]',
+      '      node sync-server/server.mjs --host 0.0.0.0 --token <口令> [--public-host <host:port>]',
       '',
       '  --port   监听端口，默认 7788（也可用 SYNC_PORT）',
       '  --host   监听地址，默认 127.0.0.1；局域网内其它设备要连时用 0.0.0.0（也可用 SYNC_HOST）',
+      '           监听非回环地址时必须同时给 --token，否则拒绝启动',
+      '  --public-host  手机该连的地址，如 192.168.1.10:7788；给反代/端口映射/域名用，',
+      '           优先于自动枚举网卡（也可用 SYNC_PUBLIC_HOST）',
       '  --data   数据文件，默认 sync-server/data/sync-data.json（也可用 SYNC_DATA）',
       '  --name   本机日志里显示的名字，默认取主机名；不再对外返回（也可用 SYNC_NAME）',
       '  --token  访问口令；设了之后所有 /api/* 都要带 Authorization: Bearer <口令>',
@@ -140,6 +166,30 @@ if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
   process.exit(1)
 }
 
+/**
+ * 本机回环的等价写法。
+ * 两处用途：① 判断 --host 是不是「只给本机用」（非回环 + 无口令 = 拒绝启动）；
+ * ② 判断请求 Origin 是不是本机来源（网页拿不到 localhost/127.0.0.1 的 Origin，
+ *    这由浏览器按地址栏决定，页面伪造不了）。回环来源按「本机可信」处理、端口不限，
+ *    这样 dev server(8090)、本地 Web 服务(7789) 不用额外配置就能连上，安全性并不因此下降。
+ */
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+/**
+ * 显式指定的对外地址（--public-host / SYNC_PUBLIC_HOST），空串表示没给。
+ * 只有服务端自己推不出「手机该连哪里」时才需要它：反代、端口映射、域名。
+ */
+const PUBLIC_HOST = String(
+  (Array.isArray(args['public-host']) ? args['public-host'][0] : args['public-host']) ??
+    process.env.SYNC_PUBLIC_HOST ??
+    ''
+).trim()
+
+if (PUBLIC_HOST && !normalizePairHost(PUBLIC_HOST, PORT)) {
+  console.error('[sync] --public-host 不合法：', PUBLIC_HOST, '（要 host[:port]，如 192.168.1.10:7788）')
+  process.exit(1)
+}
+
 // ── 访问口令与跨域来源白名单 ────────────────────────────────────────────────
 
 /** 命令行 --token 优先于 SYNC_TOKEN；两边都没有就是空串（不鉴权，本机自用） */
@@ -147,6 +197,15 @@ const RAW_TOKEN = Array.isArray(args.token) ? args.token[0] : args.token
 const TOKEN = String(
   typeof RAW_TOKEN === 'string' ? RAW_TOKEN : (process.env.SYNC_TOKEN ?? '')
 ).trim()
+
+// 对局域网开放 = 把整库会话交给局域网里任何一台机器。这是「必须同时给口令」的硬闸，
+// 不是警告：默认部署只监听 127.0.0.1，安全取向由此保证（见文件头的「对局域网开放」）。
+if (!LOOPBACK_HOSTS.has(HOST.trim().toLowerCase()) && TOKEN === '') {
+  console.error('[sync] 拒绝启动：--host %s 会监听非回环地址，但没有 --token / SYNC_TOKEN', HOST)
+  console.error('[sync]   局域网里任何设备都能读写全部会话；要么加口令，要么改回 127.0.0.1：')
+  console.error('[sync]   node sync-server/server.mjs --host %s --token <口令>', HOST)
+  process.exit(1)
+}
 
 /** 额外放行的跨域来源（--allow-origin a,b 可重复，或 SYNC_ALLOWED_ORIGINS=a,b），小写存储 */
 const EXTRA_ORIGINS = new Set(
@@ -218,8 +277,12 @@ const INVITE_TTL_MS = 10 * 60 * 1000
 /** 设备令牌只存 SHA-256，明文只在创建/加入时返回一次 */
 let group = null
 let groupSaveChain = Promise.resolve()
-/** 配对码字符集：去掉 0/O/1/I 等易混字符 */
-const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+/**
+ * 配对码字符集：去掉 0/O/1/I 等易混字符。
+ * 与 pair-uri.mjs 的 PAIR_CODE_ALPHABET 是同一份（那边负责解析校验，这里负责生成），
+ * 不许各写一套 —— 两边差一个字符就会「生成的码解析器永远认不出」。
+ */
+const CODE_ALPHABET = PAIR_CODE_ALPHABET
 
 const hashToken = (value) => crypto.createHash('sha256').update(value, 'utf8').digest('hex')
 
@@ -248,6 +311,39 @@ const publicGroup = () =>
         })),
       }
     : null
+
+/**
+ * 建组/生成配对码响应里的 pair 字段（二维码内容与它所在的上下文）。
+ *
+ * uri 由服务端拼，理由见 pair-uri.mjs 文件头：网页永远在回环上，拿不到手机可连的地址。
+ * reachable=false 时不编造地址（uri 为 null），页面据此改画「怎么开局域网模式」的说明 ——
+ * 给一个连不上的地址比不给更糟（用户会拿着手机反复试）。
+ *
+ * @param {object} input
+ * @param input.code 本次配对的明文码（只在这里与 invite 响应里出现，服务端只存 hash）
+ * @param input.expiresAt 过期时间（毫秒）
+ * @returns {{ uri: string | null, host: string | null, reachable: boolean,
+ *             reason: 'loopback' | 'no-address' | null, candidates: string[] }}
+ */
+function pairPayload({ code, expiresAt }) {
+  const target = resolvePairTarget({ listenHost: HOST, port: PORT, publicHost: PUBLIC_HOST })
+  const uri =
+    target.reachable && target.host
+      ? buildPairUri({
+          host: target.host,
+          code,
+          fingerprint: TLS?.fingerprint ?? null,
+          expiresAt,
+        })
+      : null
+  return {
+    uri,
+    host: target.host,
+    reachable: target.reachable,
+    reason: target.reason,
+    candidates: target.candidates,
+  }
+}
 
 /** 原子落盘 group.json（串行，避免并发写坏） */
 const saveGroup = () => {
@@ -805,13 +901,6 @@ function stats() {
 }
 // ── HTTP ────────────────────────────────────────────────────────────────────
 
-/**
- * 本机回环的等价写法：网页拿不到 localhost / 127.0.0.1 的 Origin（这由浏览器按地址栏决定，
- * 页面伪造不了），所以回环来源按「本机可信」处理，端口不限 —— 这样 dev server(8090)、
- * 本地 Web 服务(7789) 不用额外配置就能连上，安全性并不因此下降。
- */
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
-
 /** Android WebView 外壳加载页面用的虚拟源（android/shell），属于产品自身的来源 */
 const WEBVIEW_ORIGIN = 'https://dsapp.local'
 /** --no-webview-origin 可关掉上面这条，只留「与请求 Host 同源」 */
@@ -1105,6 +1194,8 @@ const requestHandler = async (req, res) => {
       invite: { code, expiresAt: group.invite.expiresAt },
       // 建组的人就是主机（管理端）：把证书指纹一并给他，电脑上的页面才能显示/复制
       certFingerprint: TLS?.fingerprint ?? null,
+      // 二维码内容：串由服务端拼（只有它知道手机能连的地址），页面只负责画矩阵
+      pair: pairPayload({ code, expiresAt: group.invite.expiresAt }),
     })
     log(200, 'group-created')
     return
@@ -1176,6 +1267,7 @@ const requestHandler = async (req, res) => {
       ok: true,
       invite: { code, expiresAt },
       certFingerprint: TLS?.fingerprint ?? null,
+      pair: pairPayload({ code, expiresAt }),
     })
     log(200, 'invite-created')
     return
@@ -1408,6 +1500,21 @@ server.listen(PORT, HOST, () => {
   )
   if (EXTRA_ORIGINS.size > 0) {
     console.log('[sync] 额外放行来源：%s', [...EXTRA_ORIGINS].join(', '))
+  }
+  // 扫码配对：把「手机该连哪里」说清楚。默认部署只监听回环，所以这里多半是一句能照做的命令
+  // 而不是一个地址 —— 与响应里 pair.reachable 的取值同源（pair-uri.mjs 的 resolvePairTarget）。
+  const pairTarget = resolvePairTarget({ listenHost: HOST, port: PORT, publicHost: PUBLIC_HOST })
+  if (pairTarget.reachable) {
+    console.log('[sync] 扫码配对：手机连 %s（二维码在页面「扫码配对」卡片里，含配对码与证书指纹）', pairTarget.host)
+    if (pairTarget.candidates.length > 1) {
+      console.log('[sync]   本机其它可用地址：%s（要改用 --public-host 指定）', pairTarget.candidates.slice(1).join(', '))
+    }
+  } else if (pairTarget.reason === 'loopback') {
+    console.log('[sync] 扫码配对不可用：只监听 %s，手机连上去等于连自己', HOST)
+    console.log('[sync]   要手机直连：node sync-server/server.mjs --host 0.0.0.0 --token <口令>')
+  } else {
+    console.log('[sync] 扫码配对不可用：没找到能拿给手机用的局域网地址')
+    console.log('[sync]   用 --public-host <host:port> 显式指定（反代 / 端口映射 / 域名场景）')
   }
   if (TOKEN) {
     console.log('[sync] 访问口令：已启用（/api/* 需 Authorization: Bearer <口令> 或 X-Sync-Token）')

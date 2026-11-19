@@ -150,6 +150,88 @@
   line-height: var(--ds-lh-16);
 }
 
+/* ── 扫码配对卡片 ──────────────────────────────────────────────────────────
+ * 内联卡片而不是弹窗：手机要对着屏幕扫，弹窗会挡住其它信息，点遮罩还会把它关掉。
+ * 二维码底色一律白、模块一律黑（见 .pairQr / .pairQrBox）：反相会让部分解码器认不出来，
+ * 所以深色主题下这里也不跟随主题。宽度靠 max-width 收缩，不用固定 228 px —— 同一个页面
+ * 也在手机窄屏（APK）上跑。
+ */
+.pairCard {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+}
+
+.pairTitle {
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--ds-fs-14);
+  line-height: var(--ds-lh-22);
+  font-weight: 600;
+}
+
+.pairHint {
+  color: var(--dsw-alias-label-caption);
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
+}
+
+/* 白底圆角块：把二维码固定成黑模块 / 白底，屏幕反光与深色主题都不影响识别 */
+.pairQrBox {
+  display: flex;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  padding: 4px;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.pairQr {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  background: #fff;
+}
+
+/* 过期占位：白底上的一行字（尺寸与二维码接近，避免卡片高度跳一下） */
+.pairExpired {
+  max-width: 228px;
+  padding: 24px 12px;
+  color: #333;
+  font-size: var(--ds-fs-13);
+  line-height: var(--ds-lh-20);
+  text-align: center;
+}
+
+.pairMeta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pairHost {
+  min-width: 0;
+  word-break: break-all;
+}
+
+/* 倒计时用等宽字体：数字位数变化时不左右跳 */
+.pairCountdown {
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+}
+
 /** 证书指纹行的左侧小标题（服务端 / 本机已固定） */
 .fingerprintLabel {
   flex-shrink: 0;
@@ -183,12 +265,25 @@
   text-align: right;
 }
 
-@media not all and (min-width: 768px) {
-  .groupRow {
-    flex-wrap: wrap;
-    row-gap: 8px;
-  }
+/**
+ * 组行（同步组 + 证书指纹两行）在「放不下」时改为上下堆叠，而不是把左侧文字列压扁。
+ *
+ * 为什么不能只靠下面的 768px 媒体查询：桌面模态的正文只有约 500 px 宽，
+ * 而右侧的组面板（.groupPanel，min-width 260px，里面还有 260–360 px 的二维码卡片）
+ * 一挤，左侧 .text 的 flex-basis 是 0、flex-shrink 也是 0，最终只能排成 1 字宽 ——
+ * 实测 900×1100 窗口下「服务端证书指纹」被竖排成 6 行（改动前就存在，与二维码无关）。
+ * 这里给文字列一个 220 px 的 basis 并允许换行：宽屏仍是一行，窄屏自动堆叠。
+ */
+.groupRow {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
 
+.groupRow > div:first-child {
+  flex-basis: 220px;
+}
+
+@media not all and (min-width: 768px) {
   .groupRow > div:first-child {
     flex-basis: 100%;
     padding-right: 0;

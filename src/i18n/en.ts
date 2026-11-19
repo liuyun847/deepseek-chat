@@ -277,6 +277,21 @@ export const en = {
   syncGroupInvite: 'Create pairing code',
   syncGroupInviteHint: 'Code {code}, valid until {time}. One-time use.',
   syncGroupInviteFingerprint: 'The phone also needs the certificate fingerprint: {fingerprint}',
+  syncPairTitle: 'Pair by QR code',
+  syncPairDescription:
+    'Scanning this code hands the phone three things at once: the server address, the pairing code and the certificate fingerprint. Together they are a complete join credential — do not screenshot and share it. Valid for 10 minutes, single use; the code is pulled from the page once it expires.',
+  syncPairHost: 'Server',
+  syncPairRemain: 'Expires in {time}, single use',
+  syncPairExpired: 'This QR code has expired. Use "Regenerate" to get a new one (the old code is void).',
+  syncPairCopy: 'Copy pairing string',
+  syncPairCopied: 'Pairing string copied',
+  syncPairCopyFailed: 'Copy failed. Select the pairing string and copy it manually.',
+  syncPairRefresh: 'Regenerate',
+  syncPairUnreachable:
+    'The QR code needs the phone to reach this computer directly, but the service only listens on loopback (127.0.0.1) right now, so the phone cannot connect. To allow it, restart in LAN mode: node sync-server/server.mjs --host 0.0.0.0 --token <passphrase> (a passphrase is mandatory on a LAN).',
+  syncPairNoAddress:
+    'No LAN address the phone could use was found (only virtual adapters, or offline). Pass --public-host <host:port> with this computer’s address and restart the service.',
+  syncPairFingerprintNote: 'Scanning this code carries the certificate fingerprint into the phone — no manual copying.',
   syncGroupChangeHost: 'Change host',
   syncGroupChangeHostHint: 'Only devices marked as host-capable are listed.',
   syncGroupNoHostTarget: 'No host-capable device',

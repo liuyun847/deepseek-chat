@@ -66,9 +66,17 @@ node sync-server/server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-s
 
 **自签 HTTPS 在手机上要多一步：把证书指纹固定到设备里。** 安卓壳对自签证书一律拒绝，只有在设备上固定过服务端证书的 SHA-256 指纹时才放行（`onReceivedSslError` 里其余情况直接 cancel，不允许 TOFU）。这一串 64 位小写十六进制在四个地方完全一致：服务启动日志、`node sync-server/gen-cert.mjs` 的输出、`GET /api/health` 与 `GET /` 的 `certFingerprint`、以及建组/生成配对码响应里的 `certFingerprint`（电脑上的页面会显示它并给一个**复制**按钮）。把它粘贴到 设置 → 多端同步 →「服务端证书指纹」→「保存指纹」：冒号、空格与大小写都会被规范化，页面通过 `window.__dsSync.setTlsPin()` → `Bridge.setSyncTlsPin` 交给原生，写进 SharedPreferences，**进程重启后仍然有效**。没固定之前设置页会显示红字提示，测试连接/同步/建组都会给出明确文案，而不是一句含糊的「连不上服务」。换证书（`gen-cert.mjs --force`）会改变指纹，每台手机都要重新固定一次。浏览器里没有这座桥：网页同步由本机服务校验 CA 文件或浏览器信任链负责。想不拿手机就验「没 pin / 错 pin / 对 pin」三种情况，跑 `node tools/tls-pin-sim.mjs --url https://<主机>:7788 [--pin <指纹>]`（退出码 0 通过 / 2 没 pin 被拒 / 3 指纹不匹配）。
 
+**扫码配对（二维码）**：「同步组」面板里建组或点「生成配对码」后，配对码上方会多一张「扫码配对」卡片 —— 内联 SVG（不是弹窗，手机要对着屏幕扫）、白底黑块、10 分钟倒计时。码里放的是服务端拼好的自描述串 `deepseek-sync://pair?v=1&h=<地址:端口>&c=<配对码>&f=<证书指纹>&x=<过期秒>`：**扫一张码就把服务地址、配对码、证书指纹三件套一起带进手机**，不用再手抄指纹。三条要紧的规矩：
+
+- 它是一次入组的**完整凭据**（等同于密码），有效期 10 分钟、一次性；不要截图外发、不要贴进在线二维码生成器。展示端在 `x` 到期时会把 SVG 从页面上撤掉（换成「已过期 + 重新生成」），避免把人骗去扫一张早就失效的码。
+- 二维码里的地址**只能由服务端给**：网页永远在回环上（`127.0.0.1`），拿 `location.origin` 拼出来的地址手机连上去等于连自己。服务端在 `create`/`invite` 的响应里带 `pair.uri`，页面只负责画矩阵。
+- **默认部署下这张码画不出来**：`start.ps1` 不传 `--host`，服务只监听回环，卡片会改成一条能照做的命令。要手机直连，用局域网模式重启：`node sync-server/server.mjs --host 0.0.0.0 --token <口令>`（局域网**必须**配口令，没口令时服务端直接拒绝启动；反代/端口映射/域名场景再加 `--public-host 192.168.1.5:7788` 指定手机该连哪里）。中继式部署里手机连不上时，卡片也会给出这条命令而不是给一个连不上的地址。
+
+配对串的解析器只有一份且在 TypeScript 里（`src/services/sync/pairing.ts`，可脱离浏览器测），扫码回填（阶段 2 的 M4/M5）复用它；格式的编解码自检跑 `node tools/pair-qr-sim.mjs`（L1 解析 + L2 矩阵黄金向量，退出码 0 通过）与 `node tools/pair-qr-sim.mjs --parse "<串>"`（打印解析出的地址/码/指纹/过期时间）。
+
 数据文件被外部更新后**不需要重启 sync-server**：它在 `/api/health`、`/api/state`、`POST /api/sync` 处理前先 stat 一次，发现被别处写过就重读并按 LWW 并进内存——手机 P2P 推来的会话因此立刻能在浏览器看到。
 
-开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 每次登录用无窗口的 Windows PowerShell 5.1 跑一次 `sync-server\start.ps1`（与下一节的 Web 服务同一套范式；改名成 `.vbs.disabled` 即关闭，它自己的 stderr 落在 `sync-server\logs\autostart.err.log`）。只监听 `127.0.0.1:7788`：手机走 P2P（`lan-peer`）到这台电脑，不经过这个端口。
+开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 每次登录用无窗口的 Windows PowerShell 5.1 跑一次 `sync-server\start.ps1`（与下一节的 Web 服务同一套范式；改名成 `.vbs.disabled` 即关闭，它自己的 stderr 落在 `sync-server\logs\autostart.err.log`）。自启时只监听 `127.0.0.1:7788`，手机走 P2P（`lan-peer`）到这台电脑，不经过这个端口；**只有显式用 `--host 0.0.0.0 --token <口令>` 重启时它才监听局域网**，那时手机既可以走 P2P、也可以直接连这个 HTTPS 端口（见下面的扫码配对）。
 
 同步按记录粒度做 LWW：两边独有的记录都会保留，同一条记录两端都改过时保留最后修改的那一版；删除用墓碑同步，不会被另一端拉回来；分支树字段（`parentId` / `selectedChildId` / `rootMessageId`）原样同步。附件只同步文件信息，不含原件。
 
@@ -169,6 +177,7 @@ adb install -r dist-apk\deepseek-chat.apk
 - 包名沿用 `ds.app`，签名私钥是 `android\debug.keystore`（已 gitignore），因此新包能**覆盖升级**已装版本。丢了这份私钥就只能先卸载，本地聊天记录会一起丢。
 - `versionName` 取自 `package.json`；`versionCode` 按 `major*10000 + minor*100 + patch` 折算（0.3.0 → 300）。发版前先改 `package.json`。
 - `minSdk 26`、`targetSdk 34`（升到 35 会被 Android 15 强制 edge-to-edge），权限只有 `INTERNET` 与 `CHANGE_WIFI_MULTICAST_STATE` 两条（后者是手机直连收广播用的组播锁，normal 级，安装即授予）。
+- **唯一的第三方二进制**：`android\libs\zxing-core-3.5.3.jar`（Apache-2.0，只用来把相机帧/图片解成二维码字符串，见 [android/libs/README.md](android/libs/README.md)）。这是「不引任何第三方库（含 AndroidX）」这条原则的**唯一例外**：它是 plain jar（无 AAR、无资源、无传递依赖），只需在 `tools\build-apk.ps1` 的 `javac -classpath` 与 `d8` 输入里带上，零 Gradle 约束完全保住。代价是 `classes.dex` 从 42 KB 涨到约 568 KB（APK 内压缩后 +258 KB），APK 整体 1.87 → 2.14 MB。许可全文随包放在 `android\libs\LICENSE-APACHE-2.0.txt`（Apache-2.0 第 4 条要求随分发附带），分发 APK 时请一并保留。
 - `android/` 是壳层：`MainActivity.java`（assets 供给、外链、选文件、SAF 导出、返回键）、`LanLink.java`（手机直连的 UDP 广播 + TCP 收发）、`shell.js`（页面侧补丁：返回键、blob 导出、旧 WebView 的运行时 polyfill；由 `serveAsset` 插成入口 HTML `<head>` 最前面的同步脚本，先于 defer 主包执行）、`res/`、`AndroidManifest.xml`。
 - 旧 WebView（实测 WebView 91）缺 Mermaid 依赖需要的新语法（产物里有 `class` 静态块），解析到那个 chunk 时会抛 SyntaxError。`src/services/markdown/mermaid.ts` 因此先做能力探测：不支持时图表按普通代码块显示并标注「当前环境不支持图表渲染」，连 mermaid 的 chunk 都不请求；支持时行为不变（照旧懒加载）。
 
