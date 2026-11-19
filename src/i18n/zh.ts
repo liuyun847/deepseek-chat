@@ -263,6 +263,21 @@ export const zh = {
   syncGroupInvite: '生成配对码',
   syncGroupInviteHint: '配对码 {code}，{time} 前有效，一次性使用。',
   syncGroupInviteFingerprint: '手机端加入时还要填证书指纹：{fingerprint}',
+  syncPairTitle: '扫码配对',
+  syncPairDescription:
+    '手机扫这张码即可拿到服务地址、配对码与证书指纹三件套（它们就是一次入组的完整凭据，别截图外发）。有效期 10 分钟、一次性使用，过期后这张码会自动撤掉。',
+  syncPairHost: '服务地址',
+  syncPairRemain: '{time} 后失效，一次性使用',
+  syncPairExpired: '这张二维码已过期，请点「重新生成」换一张（旧码已作废）',
+  syncPairCopy: '复制配对串',
+  syncPairCopied: '已复制配对串',
+  syncPairCopyFailed: '复制失败，请手动选中配对串复制',
+  syncPairRefresh: '重新生成',
+  syncPairUnreachable:
+    '二维码需要手机能直接连到这台电脑，而现在服务只监听本机（127.0.0.1），手机连不上。要手机直连，用局域网模式重启：node sync-server/server.mjs --host 0.0.0.0 --token <口令>（局域网一定要配口令）。',
+  syncPairNoAddress:
+    '没找到能拿给手机用的局域网地址（本机只有虚拟网卡或未联网）。用 --public-host <host:port> 显式指定这台电脑的地址后重启服务。',
+  syncPairFingerprintNote: '扫这张码会把证书指纹一起带进手机，不用再手抄。',
   syncGroupChangeHost: '更换主机',
   syncGroupChangeHostHint: '只有标记为可当主机的设备才会出现在这里。',
   syncGroupNoHostTarget: '暂无可选主机',

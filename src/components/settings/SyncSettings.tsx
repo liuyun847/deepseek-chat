@@ -22,6 +22,7 @@ import {
   transferHost,
   type GroupInfo,
   type InviteInfo,
+  type PairInfo,
 } from '../../services/sync/api.js'
 import {
   isCertFingerprint,
@@ -41,6 +42,7 @@ import {
 import type { LastSyncInfo } from '../../services/sync/snapshots.js'
 import { Button } from '../base/Button.js'
 import { Modal } from '../base/Modal.js'
+import { PairQr } from './PairQr.js'
 import { Select } from '../base/Select.js'
 import styles from './Settings.module.css'
 import syncStyles from './SyncSettings.module.css'
@@ -142,6 +144,10 @@ export const SyncSettings = () => {
   const groupEpoch = useSettings((state) => state.syncGroupEpoch)
   const [group, setGroup] = useState<GroupInfo | null>(null)
   const [invite, setInvite] = useState<InviteInfo | null>(null)
+  /** 二维码内容：服务端在 create/invite 的响应里给，跟着 invite 一起生灭 */
+  const [pair, setPair] = useState<PairInfo | null>(null)
+  /** 复制配对串的行内提示 */
+  const [pairCopyStatus, setPairCopyStatus] = useState<string | null>(null)
   const [joinCode, setJoinCode] = useState('')
   const [groupBusy, setGroupBusy] = useState(false)
   const [groupStatus, setGroupStatus] = useState<Status>(null)
@@ -240,6 +246,8 @@ export const SyncSettings = () => {
       saveSyncGroup(result.group, result.deviceToken)
       setGroup(result.group)
       setInvite(result.invite)
+      setPair(result.pair)
+      setPairCopyStatus(null)
       // 配对流程携带指纹：服务端在配对码响应里给了一份，界面直接显示（HTTP 模式为 null）
       setServerFingerprint(result.certFingerprint)
       setGroupStatus({ text: t('syncGroupCreated') })
@@ -297,6 +305,8 @@ export const SyncSettings = () => {
     try {
       const result = await createInvite(effectiveServer, groupToken)
       setInvite(result.invite)
+      setPair(result.pair)
+      setPairCopyStatus(null)
       setServerFingerprint(result.certFingerprint)
     } catch (error) {
       groupError(error)
@@ -370,6 +380,8 @@ export const SyncSettings = () => {
     clearSyncGroup()
     setGroup(null)
     setInvite(null)
+    setPair(null)
+    setPairCopyStatus(null)
     setGroupStatus(null)
   }
 
@@ -416,6 +428,22 @@ export const SyncSettings = () => {
         text: ok ? t('syncTlsCopied') : t('syncTlsCopyFailed'),
         error: !ok,
       })
+    })
+  }
+
+  /**
+   * 复制配对串（整条 deepseek-sync://…）。
+   * 有它的理由：给没有摄像头的设备、给远程协助（把串发给对方）、以及让人能直接看一眼。
+   * 用的是 copyText（带 execCommand 兜底，正是为「手机通过局域网 HTTP 访问」准备的）。
+   */
+  const onCopyPair = () => {
+    const uri = pair?.uri
+    if (!uri) {
+      setPairCopyStatus(t('syncPairCopyFailed'))
+      return
+    }
+    void copyText(uri).then((ok) => {
+      setPairCopyStatus(ok ? t('syncPairCopied') : t('syncPairCopyFailed'))
     })
   }
 
@@ -672,6 +700,16 @@ export const SyncSettings = () => {
                   </li>
                 ))}
               </ul>
+              {invite && pair ? (
+                <PairQr
+                  pair={pair}
+                  expiresAt={invite.expiresAt}
+                  busy={groupBusy}
+                  onCopy={onCopyPair}
+                  onRefresh={() => void onInvite()}
+                  copyStatus={pairCopyStatus}
+                />
+              ) : null}
               {invite ? (
                 <div className={syncStyles.invite}>
                   {t('syncGroupInviteHint', {

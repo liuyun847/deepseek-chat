@@ -4,8 +4,11 @@
     构建 APK。零 Gradle、零 Maven 依赖，链路为 aapt2 -> javac -> d8 -> jar -> zipalign -> apksigner。
 
 .DESCRIPTION
-    为什么不用 Gradle：本项目不引任何第三方库（含 AndroidX），需要的东西都在 Android SDK
-    自身里。手工链路因此更短、更快，也彻底绕开国内网络拉 Maven 制品的失败点。
+    为什么不用 Gradle：除了 android\libs\ 下的第三方 jar（目前只有 ZXing core 3.5.3，
+    Apache-2.0，只用于解二维码）之外不引任何第三方库（含 AndroidX），其余都在 Android SDK
+    自身里。手工链路因此更短、更快，也彻底绕开国内网络拉 Maven 制品（不做 Gradle/Maven 解析）。
+    jar 的来源、sha256、许可、裁剪办法与「为什么不用 AAR」见 android\libs\README.md。
+    体积代价：整包 607,650 B，d8 后 classes.dex 约 +528 KB（未压缩），APK 内是 deflate 的。
 
     前置：前端产物必须已经存在（脚本会检查 dist\index.html）
         pnpm --config.shell-emulator=true build
@@ -18,7 +21,7 @@
       3. aapt2 link：.flat + AndroidManifest + assets -> base.apk，同时产出 R.java
       3.5 修正 assets 条目名分隔符（Windows 上 aapt2 会写成反斜杠 -> 应用白屏）
       4. javac：MainActivity.java + R.java -> .class
-      5. d8：.class -> classes.dex
+      5. d8：.class + android\libs\*.jar -> classes.dex
       6. jar：把 classes.dex 塞进 base.apk
       7. zipalign：4 字节对齐（必须在签名之前）
       8. apksigner：v2 + v3 签名，私钥沿用 android\debug.keystore
@@ -57,6 +60,15 @@ $BtVer  = '35.0.1'
 $Bt     = Join-Path $Sdk "build-tools\$BtVer"
 $Pf     = Join-Path $Sdk 'platforms\android-35'
 $Jar    = Join-Path $Pf 'android.jar'
+# 第三方 jar：目前只有 ZXing core 3.5.3（Apache-2.0；来源与 sha256 见 android\libs\README.md）。
+# javac 要能从里面读到被引用的类，d8 要把它们一并转成 dex —— 不转就是运行期 NoClassDefFoundError
+# （jar 本身不进 APK，只有 classes.dex 会被加载）。用 Get-ChildItem 而不是写死文件名：
+# 以后加 jar 不用再改本脚本，但许可文件仍要按 android\libs\README.md 的规矩补。
+$Libs   = Join-Path $Root 'android\libs'
+$LibJars = @()
+if (Test-Path -LiteralPath $Libs) {
+    $LibJars = @(Get-ChildItem -LiteralPath $Libs -Filter *.jar -File | ForEach-Object { $_.FullName })
+}
 $Front  = Join-Path $Root 'dist'
 $Build  = Join-Path $Root 'build'
 $OutDir = Join-Path $Root 'dist-apk'
@@ -194,7 +206,7 @@ $sources = @(Get-ChildItem (Join-Path $Root 'android\java') -Recurse -Filter *.j
 # -source 8：android.jar 里没有 LambdaMetafactory，MainActivity 全用匿名内部类，不能用 lambda
 $javacArgs = @(
     '-encoding', 'UTF-8', '-source', '8', '-target', '8',
-    '-bootclasspath', $Jar, '-classpath', $Jar, '-Xlint:-options',
+    '-bootclasspath', $Jar, '-classpath', ((@($Jar) + $LibJars) -join ';'), '-Xlint:-options',
     '-d', $classes
 ) + $sources
 # 不把 javac 的输出接进 PowerShell 管道：javac 按系统代码页写 stdout，管道会被按 UTF-8
@@ -209,7 +221,9 @@ $dex = Join-Path $Build 'dex'
 New-Item -ItemType Directory -Force -Path $dex | Out-Null
 Push-Location $classes
 try {
-    & (Join-Path $Bt 'd8.bat') --lib $Jar --min-api 26 --output $dex (Get-ChildItem -Recurse -Filter *.class | ForEach-Object { $_.FullName })
+    # d8 接受 jar 作为 program 输入（实测退出码 0）；jar 不转 dex 的话运行期找不到类
+    $programInputs = @(Get-ChildItem -Recurse -Filter *.class | ForEach-Object { $_.FullName }) + $LibJars
+    & (Join-Path $Bt 'd8.bat') --lib $Jar --min-api 26 --output $dex $programInputs
     if ($LASTEXITCODE -ne 0) { throw 'd8 失败' }
 } finally { Pop-Location }
 Ok "classes.dex $([math]::Round((Get-Item (Join-Path $dex 'classes.dex')).Length/1KB,1)) KB"

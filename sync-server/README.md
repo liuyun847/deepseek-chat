@@ -128,12 +128,20 @@ node sync-server/server.mjs --tls-cert sync-server/tls/cert.pem --tls-key sync-s
 # 指定端口 / 数据文件 / 局域网监听（局域网务必配 TLS + token）
 node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 \
   --tls-cert sync-server/tls/cert.pem --tls-key sync-server/tls/key.pem --token <口令>
+
+# 手机扫码配对（二维码里的地址由服务端拼；反代/端口映射场景用 --public-host 显式指定）
+node sync-server/server.mjs --host 0.0.0.0 --token <口令> --tls-cert sync-server/tls/cert.pem \
+  --tls-key sync-server/tls/key.pem --public-host 192.168.1.5:7788
 ```
+
+**监听非回环地址但没设口令时本进程拒绝启动**（不是警告）：那等于把整库会话交给局域网里任何一台机器。
+默认只监听 `127.0.0.1`，本机自用不需要口令。
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `--port` | `SYNC_PORT` | `7788` | 监听端口 |
-| `--host` | `SYNC_HOST` | `127.0.0.1` | 监听地址；局域网内其它设备要连时用 `0.0.0.0` |
+| `--host` | `SYNC_HOST` | `127.0.0.1` | 监听地址；局域网内其它设备要连时用 `0.0.0.0`，**此时必须同时给 `--token`**，否则拒绝启动 |
+| `--public-host` | `SYNC_PUBLIC_HOST` | 空（自动枚举网卡） | 二维码里的地址，形如 `192.168.1.5:7788`；反代 / 端口映射 / 域名这些服务端推不出来的场景用它，优先于自动枚举 |
 | `--data` | `SYNC_DATA` | `sync-server/data/sync-data.json` | 数据文件（相对路径按当前工作目录解析） |
 | `--name` | `SYNC_NAME` | 主机名 | 只在服务端日志里显示，不再对外返回 |
 | `--token` | `SYNC_TOKEN` | 空（不鉴权） | 访问口令；设了之后 `/api/*` 必须带 `Authorization: Bearer <口令>` 或 `X-Sync-Token` |
@@ -162,9 +170,9 @@ node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 
 | 方法 | 路径 | 请求 | 响应 |
 | --- | --- | --- | --- |
 | GET | `/api/group` | — | `{ ok, group }`；未建组时 `group: null` |
-| POST | `/api/group/create` | `{ device, name, groupName?, canHost? }` | `{ ok, group, deviceToken, invite:{ code, expiresAt }, certFingerprint }`，仅未建组时可用 |
+| POST | `/api/group/create` | `{ device, name, groupName?, canHost? }` | `{ ok, group, deviceToken, invite:{ code, expiresAt }, certFingerprint, pair }`，仅未建组时可用 |
 | POST | `/api/group/join` | `{ code, device, name, canHost? }` | `{ ok, group, deviceToken }`；配对码一次性 |
-| POST | `/api/group/invite` | 需令牌 | `{ ok, invite:{ code, expiresAt }, certFingerprint }`，仅主机 |
+| POST | `/api/group/invite` | 需令牌 | `{ ok, invite:{ code, expiresAt }, certFingerprint, pair }`，仅主机 |
 | POST | `/api/group/host` | `{ device, targetDeviceId, epoch }` + 令牌 | `{ ok, group }`；epoch 不匹配回 409 |
 | POST | `/api/group/revoke` | `{ targetDeviceId }` + 主机令牌 | `{ ok, group }`；不能移除主机自己 |
 
@@ -177,6 +185,45 @@ node sync-server/server.mjs --port 7788 --data D:\sync\chat.json --host 0.0.0.0 
 
 > 主机是组内的管理角色；数据服务仍然由运行 `sync-server` 的那台机器提供。手机可以加入组、被指定为主机，
 > 但要让手机真正提供同步服务，需要在 APK 里增加原生 host 运行时（见后续工作）。
+
+### 二维码配对串（`pair`）
+
+`create` 与 `invite` 两条响应里各多一个 `pair` 对象，给页面画二维码用：
+
+```json
+{
+  "pair": {
+    "uri": "deepseek-sync://pair?v=1&h=192.168.1.5:7788&c=ABCD2345&f=7a8bc5…ade3&x=1766000000",
+    "host": "192.168.1.5:7788",
+    "reachable": true,
+    "reason": null,
+    "candidates": ["192.168.1.5:7788"]
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `uri` | 自描述串：`v` 协议版本（当前 `1`）、`h` 服务地址 `host[:port]`（省端口即 7788）、`c` 8 位配对码、`f` 证书 SHA-256（64 位小写十六进制，仅 HTTPS）、`x` 过期时间（Unix 秒） |
+| `host` | `uri` 里用的地址；不可达时为 `null` |
+| `reachable` | `false` 表示**这张码手机用不了**（页面据此改画「怎么开局域网模式」的说明，不画码） |
+| `reason` | `loopback`（只监听回环）/ `no-address`（没找到可用网卡）/ `null` |
+| `candidates` | 本机其它可用地址，第一项就是 `uri` 里那个 |
+
+**串为什么由服务端拼**：网页永远在回环上（页面由 `local-server` 托管，只绑 127.0.0.1），
+`location.origin` 恒为 `127.0.0.1:7789` —— 手机照着连等于连自己。只有服务端知道自己监听在哪、
+这台机器有哪些网卡，所以页面只负责把 `uri` 画成矩阵。
+
+地址的挑法（实现在 `sync-server/pair-uri.mjs`，有单测式自检）：
+显式给了 `--public-host` 就用它（并认为可达，反代场景正是这样）；否则监听在回环 → `reachable=false`；
+监听在 `0.0.0.0` → 枚举网卡并**丢掉** `internal`、`169.254.*`（APIPA）与虚拟网卡
+（VirtualBox `0a:00:27`/`08:00:27`、VMware `00:50:56`/`00:0c:29`/`00:05:69`、Hyper-V `00:15:5d`），
+再按 `192.168.*` > `10.*` > `172.16-31.*` > 其它排序取第一名（本机有两块网卡，实测挑到的是真实的
+`192.168.x.x`，不是 VirtualBox 的 `192.168.56.1`）。
+
+安全边界没变：码仍是一次性 + 10 分钟 TTL（`f`/`x` 只是告诉手机「这张码是谁、到几点」），
+二维码与 `invite.code` 是同一个码的两种呈现，服务端仍然只存 `codeHash`。`x` 过期由展示端撤图，
+真正的闸在 `join` 的时间与哈希比对。
 
 `OPTIONS` 返回 204 + CORS 头，允许 `GET` / `POST` / `Content-Type` / `Authorization` / `X-Sync-Token`；
 来源通过白名单才回显 `Origin`，不通过直接 403 且不回任何 CORS 头（见下节「访问控制」）。

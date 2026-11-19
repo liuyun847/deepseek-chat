@@ -359,18 +359,38 @@ export type GroupInfo = {
 
 export type InviteInfo = { code: string; expiresAt: number }
 /**
+ * 二维码配对信息：服务端拼好的自描述串 + 它是在什么前提下拼的。
+ *
+ * uri 为 null 表示这台服务没给出「手机能连到的地址」（默认只监听回环就是这个情况），
+ * 此时不要自己拼一个 —— 拿 location.origin 拼出来的地址手机连上去等于连自己。
+ */
+export type PairInfo = {
+  /** 自描述串；reachable 为 false 时为 null */
+  uri: string | null
+  /** 串里的 host:port；不可达时为 null */
+  host: string | null
+  /** false = 现在这张码手机用不了（reason 说明为什么） */
+  reachable: boolean
+  /** 'loopback' = 只监听本机；'no-address' = 没找到可用的网卡地址 */
+  reason: 'loopback' | 'no-address' | null
+  /** 其它可用地址（host:port），第一项就是 uri 里用的那个 */
+  candidates: string[]
+}
+/**
  * 建组/生成配对码的返回。
  * certFingerprint 是服务端证书指纹（HTTP 模式为 null），只有管理端/主机这两条路能拿到：
  * 电脑上的页面靠它把指纹显示出来给人复制，手机那边人工填入后再配对。
+ * pair 是二维码内容（老服务端没有这个字段，解析成 null）。
  */
 export type CreateGroupResult = {
   group: GroupInfo
   deviceToken: string
   invite: InviteInfo
   certFingerprint: string | null
+  pair: PairInfo | null
 }
-/** 生成配对码的结果：码 + 服务端证书指纹 */
-export type InviteResult = { invite: InviteInfo; certFingerprint: string | null }
+/** 生成配对码的结果：码 + 服务端证书指纹 + 二维码内容 */
+export type InviteResult = { invite: InviteInfo; certFingerprint: string | null; pair: PairInfo | null }
 export type JoinGroupResult = { group: GroupInfo; deviceToken: string }
 
 /** 校验服务端返回的组结构；字段缺失按协议错误处理 */
@@ -417,6 +437,36 @@ const parseInvite = (value: unknown): InviteInfo => {
   return { code: invite.code, expiresAt: invite.expiresAt }
 }
 
+/**
+ * 读响应里的 pair 字段。
+ *
+ * 整个字段缺失（老服务端）→ null，界面就不显示二维码卡片，别的功能照旧。
+ * 字段在但形状不对 → 也按 null 处理而不是报错：二维码是锦上添花，
+ * 不能因为它的字段变形就把「建组成功」变成一次失败。
+ */
+const parsePair = (value: unknown): PairInfo | null => {
+  if (value === null || value === undefined) {
+    return null
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return null
+  }
+  const pair = value as Partial<PairInfo>
+  if (typeof pair.reachable !== 'boolean') {
+    return null
+  }
+  const reason = pair.reason === 'loopback' || pair.reason === 'no-address' ? pair.reason : null
+  return {
+    uri: typeof pair.uri === 'string' ? pair.uri : null,
+    host: typeof pair.host === 'string' ? pair.host : null,
+    reachable: pair.reachable,
+    reason,
+    candidates: Array.isArray(pair.candidates)
+      ? pair.candidates.filter((item): item is string => typeof item === 'string')
+      : [],
+  }
+}
+
 /** 读组信息；服务端还没建组时返回 null */
 export const fetchGroup = async (serverUrl: string): Promise<GroupInfo | null> => {
   const body = asObject(await request(serverUrl + '/api/group'))
@@ -436,6 +486,7 @@ export const createGroup = async (
     deviceToken: typeof body.deviceToken === 'string' ? body.deviceToken : '',
     invite: parseInvite(body.invite),
     certFingerprint: normalizeCertFingerprint(body.certFingerprint) || null,
+    pair: parsePair(body.pair),
   }
 }
 
@@ -465,6 +516,7 @@ export const createInvite = async (
   return {
     invite: parseInvite(body.invite),
     certFingerprint: normalizeCertFingerprint(body.certFingerprint) || null,
+    pair: parsePair(body.pair),
   }
 }
 
