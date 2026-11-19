@@ -31,6 +31,19 @@
  *   GET  /api/state    全量记录（含墓碑）
  *   POST /api/sync     推送变更 { device, records } → 合并后返回全量
  *
+ * 证书指纹分发（自签 HTTPS 配对）
+ *   启用 TLS 时本服务计算一次证书 DER 的 SHA-256，并**只**用它对外：
+ *     - 启动日志打印一行（只打印指纹，私钥与证书内容一律不打印）
+ *     - GET / 与 GET /api/health 的 certFingerprint 字段（HTTP 模式下为 null），
+ *       同值保留旧字段名 tlsFingerprint 作为兼容别名
+ *     - POST /api/group/create 与 POST /api/group/invite 的 certFingerprint
+ *       （管理端/主机才走得到的两条路，网页版靠它把指纹展示给用户复制）
+ *   格式与算法见 sync-server/cert-fingerprint.mjs（64 位小写十六进制、无分隔符，
+ *   与 Android 的 Bridge.setSyncTlsPin / onReceivedSslError 判据逐字节等价）。
+ *   注意：手机在固定指纹之前连不上本服务（WebView 会直接 cancel 自签证书），
+ *   所以**手机拿指纹只能靠人工/二维码，不能靠它自己请求接口**——接口里的指纹是给
+ *   电脑上的页面显示与复制用的。
+ *
  * 存储
  *   一个 JSON 文件，原子写（先写 .tmp 再 rename），写入去抖 200ms，退出前强制落盘。
  *   文件结构：{ format, version, updatedAt, records: { "kind:id": record } }
@@ -46,6 +59,8 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { certFingerprintFromPem } from './cert-fingerprint.mjs'
 
 /** 与客户端一致的协议标识与版本；不匹配直接拒绝，避免两套语义互相污染 */
 const SYNC_FORMAT = 'chat-demo-sync'
@@ -105,6 +120,9 @@ if (args.help) {
       '  --tls-key   PEM 私钥路径；与 --tls-cert 同时给时启用 HTTPS（也可用 SYNC_TLS_KEY）',
       '  --allow-origin  额外放行的跨域来源，逗号分隔可写多个，可重复给（也可用 SYNC_ALLOWED_ORIGINS）',
       '  --no-webview-origin  不放行 Android 外壳的 https://dsapp.local 来源',
+      '',
+      '启用 HTTPS 时启动日志会打印证书 SHA-256 指纹（64 位小写十六进制），',
+      '手机端「多端同步 → 证书指纹」填的就是这一串；换证书后要重新固定。',
     ].join('\n')
   )
   process.exit(0)
@@ -162,8 +180,10 @@ const TLS_KEY_PATH = String(
 ).trim()
 
 /**
+ * 读证书与私钥，并算一次规范格式的证书指纹（64 位小写十六进制，见 cert-fingerprint.mjs）。
+ *
  * @returns {Promise<{ cert: Buffer, key: Buffer, fingerprint: string } | null>}
- *   未配置 TLS 时 null；证书读不了直接退出
+ *   未配置 TLS 时 null（fingerprint 也就没有）；证书读不了直接退出
  */
 async function loadTls() {
   if (!TLS_CERT_PATH && !TLS_KEY_PATH) {
@@ -178,8 +198,9 @@ async function loadTls() {
       fsp.readFile(TLS_CERT_PATH),
       fsp.readFile(TLS_KEY_PATH),
     ])
-    const parsed = new crypto.X509Certificate(cert)
-    return { cert, key, fingerprint: parsed.fingerprint256 }
+    // 不用 X509Certificate.fingerprint256：那是 "AB:CD:…" 的大写冒号写法，
+    // 与手机端 [0-9a-f]{64} 的判据对不上。这里统一走 cert-fingerprint.mjs。
+    return { cert, key, fingerprint: certFingerprintFromPem(cert) }
   } catch (error) {
     console.error('[sync] 读取 TLS 证书/私钥失败：', error.message)
     process.exit(1)
@@ -1013,6 +1034,9 @@ const requestHandler = async (req, res) => {
       version: SYNC_VERSION,
       tokenRequired: TOKEN !== '',
       tls: TLS !== null,
+      // 规范格式（64 位小写十六进制）；HTTP 模式下为 null。
+      // tlsFingerprint 是 PR #3 起的旧字段名，同值保留，客户端已改为优先读 certFingerprint。
+      certFingerprint: TLS?.fingerprint ?? null,
       tlsFingerprint: TLS?.fingerprint ?? null,
       endpoints: [
         'GET /api/health',
@@ -1079,6 +1103,8 @@ const requestHandler = async (req, res) => {
       group: publicGroup(),
       deviceToken: token,
       invite: { code, expiresAt: group.invite.expiresAt },
+      // 建组的人就是主机（管理端）：把证书指纹一并给他，电脑上的页面才能显示/复制
+      certFingerprint: TLS?.fingerprint ?? null,
     })
     log(200, 'group-created')
     return
@@ -1146,7 +1172,11 @@ const requestHandler = async (req, res) => {
     const expiresAt = Date.now() + INVITE_TTL_MS
     group.invite = { codeHash: hashToken(code), expiresAt }
     await saveGroup()
-    send(req, res, 200, { ok: true, invite: { code, expiresAt } })
+    send(req, res, 200, {
+      ok: true,
+      invite: { code, expiresAt },
+      certFingerprint: TLS?.fingerprint ?? null,
+    })
     log(200, 'invite-created')
     return
   }
@@ -1227,6 +1257,7 @@ const requestHandler = async (req, res) => {
       time: Date.now(),
       tokenRequired: TOKEN !== '',
       tls: TLS !== null,
+      certFingerprint: TLS?.fingerprint ?? null,
       tlsFingerprint: TLS?.fingerprint ?? null,
       groupId: group?.groupId ?? null,
       groupName: group?.groupName ?? null,
@@ -1350,8 +1381,10 @@ server.listen(PORT, HOST, () => {
   const scheme = TLS ? 'https' : 'http'
   console.log('[sync] %s v%d 监听 %s://%s:%d', SYNC_FORMAT, SYNC_VERSION, scheme, HOST, PORT)
   if (TLS) {
-    console.log('[sync] TLS 指纹 SHA-256：%s', TLS.fingerprint)
-    console.log('[sync] 客户端 / 反代用同一条证书做校验；换证书后需要重新配对')
+    // 只打印指纹：证书内容与私钥一律不出现在日志里。手机上要人工/扫码带入这一串
+    console.log('[sync] 证书 SHA-256 指纹：%s', TLS.fingerprint)
+    console.log('[sync] 把这 64 位指纹填进手机「多端同步 → 证书指纹」，或让反代用同一张证书校验')
+    console.log('[sync] 换证书（重新 gen-cert）后指纹会变，手机需要重新固定一次')
   } else {
     console.warn('[sync] ⚠ 当前是明文 HTTP：只建议回环使用，局域网请加 --tls-cert / --tls-key')
   }

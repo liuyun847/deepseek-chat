@@ -10,7 +10,7 @@
  * 构建时由 tools/build-apk.ps1 从 android/shell/ 拷进 APK 的 assets/shell.js ——
  * 它不参与前端构建，dist/index.html 里也没有它（网页形态下没有这个文件，只有壳里才有）。
  *
- * 四件事，前三件都是 WebView 缺浏览器那一层能力、页面里补不了：
+ * 五件事，前四件都是 WebView 缺浏览器那一层能力、页面里补不了：
  *
  *   1. 返回键：前端是单页应用、没有 history 路由，系统返回键无从判断"该关哪个界面"。
  *      这里给原生一个 window.__dsBack()，从离用户最近的一层往外回退，返回 true 表示这次
@@ -40,7 +40,12 @@
  *      由页面反过来同步取（window.__dsLan.take/send），并把「页面还没注册处理器时请求先到了」
  *      这段竞态用队列接住 —— 见下面「局域网直连（手机↔手机）的桥接层」一节。
  *
- *   4. 导出下载：设置里「导出全部对话」是 {URL.createObjectURL → <a download> → click()}。
+ *   4. 自签证书指纹桥：同步服务用自己的自签证书时，WebView 在 TLS 阶段就会拒绝它，
+ *      只认「本机固定过的 SHA-256」（MainActivity.onReceivedSslError）。页面没法直接把值
+ *      塞进那个字段，得走桥：window.__dsSync.setTlsPin(指纹) → __DS_BRIDGE__.setSyncTlsPin
+ *      → 写 SharedPreferences（进程重启后仍然有效）。见下面「自签证书指纹」一节。
+ *
+ *   5. 导出下载：设置里「导出全部对话」是 {URL.createObjectURL → <a download> → click()}。
  *      这个流程在浏览器里由下载管理器接管，WebView 没有下载管理器，点了什么都不会发生
  *      （DownloadListener 也拿不到 blob: 的内容 —— 它只活在渲染进程里）。
  *      所以这里在捕获阶段拦下带 download 属性的 blob: 链接，自己 fetch 出内容，
@@ -198,6 +203,53 @@
           reject(e)
         }
       })
+    },
+  }
+
+  // ── 自签证书指纹（HTTPS 同步的证书固定）───────────────────────────────────
+  //
+  // 原生侧（MainActivity）那两个方法本来就有：
+  //   setSyncTlsPin(fingerprint)  规范化（去冒号/空格、转小写）后写 SharedPreferences "dsapp"/"sync_tls_pin"
+  //   getSyncTlsPin()            读当前内存值（onCreate 时从同一份 prefs 载入）
+  // 这里只做三件事：能力探测、输入兜底校验、异常吞掉（桥不在时页面不能因此报错）。
+  //
+  // 为什么还要包一层而不是让页面直接调 __DS_BRIDGE__：页面侧（src/services/sync/tls.ts）
+  // 只认 window.__dsSync，浏览器里这个对象不存在 → 所有调用变成「不可用」静默跳过，
+  // 不必到处写「有没有原生桥」的判断。
+
+  var tlsBridge = window.__DS_BRIDGE__
+  var tlsBridgeAvailable = !!(tlsBridge && typeof tlsBridge.setSyncTlsPin === 'function')
+
+  window.__dsSync = {
+    available: tlsBridgeAvailable,
+
+    /** 读本机固定的指纹（小写十六进制）；桥不在或没固定时返回空串 */
+    getTlsPin: function () {
+      if (!tlsBridgeAvailable || typeof tlsBridge.getSyncTlsPin !== 'function') return ''
+      try {
+        return String(tlsBridge.getSyncTlsPin() || '')
+      } catch (e) {
+        return ''
+      }
+    },
+
+    /**
+     * 固定（空串 = 清除）本机指纹。
+     * @param {string} fingerprint 任意写法，冒号/空格会被去掉并转小写
+     * @returns {boolean} true = 已交给原生；false = 桥不在或格式不对
+     */
+    setTlsPin: function (fingerprint) {
+      if (!tlsBridgeAvailable) return false
+      var text = String(fingerprint === null || fingerprint === undefined ? '' : fingerprint)
+      var value = text.replace(/[^0-9a-zA-Z]/g, '').toLowerCase()
+      // 非空却不合法：不写，交给页面提示（绝不能把错的当「清除」）
+      if (value && !/^[0-9a-f]{64}$/.test(value)) return false
+      try {
+        tlsBridge.setSyncTlsPin(value)
+        return true
+      } catch (e) {
+        return false
+      }
     },
   }
 

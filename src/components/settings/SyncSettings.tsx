@@ -24,6 +24,13 @@ import {
   type InviteInfo,
 } from '../../services/sync/api.js'
 import {
+  isCertFingerprint,
+  readSyncTlsPin,
+  syncTlsPinAvailable,
+  writeSyncTlsPin,
+} from '../../services/sync/tls.js'
+import { copyText } from '../../utils/clipboard.js'
+import {
   prepareFirstSync,
   refreshLastSync,
   runSync,
@@ -139,6 +146,14 @@ export const SyncSettings = () => {
   const [groupBusy, setGroupBusy] = useState(false)
   const [groupStatus, setGroupStatus] = useState<Status>(null)
   const [hostTarget, setHostTarget] = useState('')
+  /** 服务端自报的证书指纹；HTTP 模式或还没连上时为 null */
+  const [serverFingerprint, setServerFingerprint] = useState<string | null>(null)
+  /** 本机（安卓壳）已固定的指纹；浏览器里恒为空串 */
+  const [pinnedFingerprint, setPinnedFingerprint] = useState(() => readSyncTlsPin())
+  const [fingerprintInput, setFingerprintInput] = useState('')
+  const [fingerprintStatus, setFingerprintStatus] = useState<Status>(null)
+  /** 本环境能否把指纹固定到原生层：只有 APK 里有这座桥 */
+  const pinSupported = syncTlsPinAvailable()
 
   useEffect(() => {
     void refreshLastSync()
@@ -161,6 +176,13 @@ export const SyncSettings = () => {
         : t('syncNeedsServer')
   const disabled = disabledReason !== null || busy !== null || working
   const lastText = useLastSyncText(last)
+  /**
+   * 要连的是 HTTPS、本机是安卓壳、但还没固定证书指纹。
+   * 这种情况下 WebView 必然 cancel 自签证书，请求会以「连不上」的形式失败 ——
+   * 与其让用户对着「连不上」猜，不如所有连线动作一律先给一句能照做的提示（见页面上的指纹行）。
+   */
+  const tlsPinBlocked =
+    (effectiveServer ?? '').startsWith('https://') && pinSupported && !pinnedFingerprint
 
   // 打开设置时读一次服务端的组信息；已加入组但服务端没有组时保持 null，提示重新配对
   useEffect(() => {
@@ -202,6 +224,10 @@ export const SyncSettings = () => {
     if (!effectiveServer) {
       return
     }
+    if (tlsPinBlocked) {
+      setGroupStatus({ text: t('syncErrorTlsPinMissing'), error: true })
+      return
+    }
     commit()
     setGroupBusy(true)
     setGroupStatus(null)
@@ -214,6 +240,8 @@ export const SyncSettings = () => {
       saveSyncGroup(result.group, result.deviceToken)
       setGroup(result.group)
       setInvite(result.invite)
+      // 配对流程携带指纹：服务端在配对码响应里给了一份，界面直接显示（HTTP 模式为 null）
+      setServerFingerprint(result.certFingerprint)
       setGroupStatus({ text: t('syncGroupCreated') })
     } catch (error) {
       groupError(error)
@@ -228,6 +256,10 @@ export const SyncSettings = () => {
     }
     const code = joinCode.trim().toUpperCase()
     if (!code) {
+      return
+    }
+    if (tlsPinBlocked) {
+      setGroupStatus({ text: t('syncErrorTlsPinMissing'), error: true })
       return
     }
     commit()
@@ -256,10 +288,16 @@ export const SyncSettings = () => {
       setGroupStatus({ text: t('syncGroupTokenMissing'), error: true })
       return
     }
+    if (tlsPinBlocked) {
+      setGroupStatus({ text: t('syncErrorTlsPinMissing'), error: true })
+      return
+    }
     setGroupBusy(true)
     setGroupStatus(null)
     try {
-      setInvite(await createInvite(effectiveServer, groupToken))
+      const result = await createInvite(effectiveServer, groupToken)
+      setInvite(result.invite)
+      setServerFingerprint(result.certFingerprint)
     } catch (error) {
       groupError(error)
     } finally {
@@ -335,12 +373,60 @@ export const SyncSettings = () => {
     setGroupStatus(null)
   }
 
+  /** 把指纹固定到本机（写进原生 SharedPreferences；浏览器里静默跳过） */
+  const pinFingerprint = (value: string) => {
+    // 没有桥（浏览器里）时按钮本来就不渲染，这里再兜一层：给「浏览器没有固定能力」而不是格式错误
+    if (!pinSupported) {
+      setFingerprintStatus({ text: t('syncTlsBrowserHint') })
+      return false
+    }
+    if (!writeSyncTlsPin(value)) {
+      setFingerprintStatus({ text: t('syncTlsPinInvalid'), error: true })
+      return false
+    }
+    setPinnedFingerprint(readSyncTlsPin())
+    setFingerprintStatus({ text: t('syncTlsPinSaved') })
+    return true
+  }
+
+  /** 手动粘贴指纹保存；清空输入框即清除固定 */
+  const onSaveFingerprint = () => {
+    if (!isCertFingerprint(fingerprintInput)) {
+      setFingerprintStatus({ text: t('syncTlsPinInvalid'), error: true })
+      return
+    }
+    if (pinFingerprint(fingerprintInput)) {
+      setFingerprintInput('')
+    }
+  }
+
+  const onClearFingerprint = () => {
+    pinFingerprint('')
+  }
+
+  /** 复制服务端上报的指纹（没有时退回复制本机已固定的那份） */
+  const onCopyFingerprint = () => {
+    const value = serverFingerprint ?? pinnedFingerprint
+    if (!value) {
+      setFingerprintStatus({ text: t('syncTlsCopyEmpty'), error: true })
+      return
+    }
+    void copyText(value).then((ok) => {
+      setFingerprintStatus({
+        text: ok ? t('syncTlsCopied') : t('syncTlsCopyFailed'),
+        error: !ok,
+      })
+    })
+  }
+
   const onTest = async () => {
     commit()
     setTestStatus(null)
     setActionStatus(null)
     try {
       const health = await testConnection()
+      // 服务端自报的指纹：提前读回来，用户就不必去电脑上抄一遍
+      setServerFingerprint(health.certFingerprint)
       setTestStatus({
         text: t('syncTestOk', {
           name: health.name,
@@ -436,6 +522,93 @@ export const SyncSettings = () => {
         }
       />
       <Row
+        className={syncStyles.groupRow}
+        label={t('syncTlsLabel')}
+        description={t('syncTlsDescription')}
+        status={
+          fingerprintStatus ??
+          (tlsPinBlocked ? { text: t('syncTlsPinMissingHint'), error: true } : null)
+        }
+        action={
+          <div className={syncStyles.groupPanel}>
+            <div className={syncStyles.field}>
+              <span className={syncStyles.fingerprintLabel}>{t('syncTlsServerFingerprint')}</span>
+              <code className={syncStyles.fingerprint} data-ds-fingerprint>
+                {serverFingerprint ?? t('syncTlsServerFingerprintUnknown')}
+              </code>
+              <Button
+                variant="outlined"
+                size="m"
+                className={styles.cellButton}
+                disabled={!serverFingerprint && !pinnedFingerprint}
+                onClick={onCopyFingerprint}
+              >
+                {t('syncTlsCopy')}
+              </Button>
+            </div>
+            {pinSupported ? (
+              <>
+                <div className={syncStyles.field}>
+                  <span className={syncStyles.fingerprintLabel}>{t('syncTlsPinned')}</span>
+                  <code className={syncStyles.fingerprint} data-ds-pin>
+                    {pinnedFingerprint || t('syncTlsPinnedNone')}
+                  </code>
+                  {pinnedFingerprint ? (
+                    <Button
+                      variant="outlined"
+                      size="m"
+                      className={styles.cellButton}
+                      onClick={onClearFingerprint}
+                    >
+                      {t('syncTlsPinClear')}
+                    </Button>
+                  ) : null}
+                </div>
+                <div className={syncStyles.field}>
+                  <input
+                    className={syncStyles.input}
+                    value={fingerprintInput}
+                    placeholder={t('syncTlsPinPlaceholder')}
+                    spellCheck={false}
+                    autoComplete="off"
+                    maxLength={80}
+                    onChange={(event) => setFingerprintInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        onSaveFingerprint()
+                      }
+                    }}
+                  />
+                  <Button
+                    size="m"
+                    className={styles.cellButton}
+                    disabled={!fingerprintInput.trim()}
+                    onClick={onSaveFingerprint}
+                  >
+                    {t('syncTlsPinSave')}
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    size="m"
+                    className={styles.cellButton}
+                    disabled={!serverFingerprint || serverFingerprint === pinnedFingerprint}
+                    onClick={() => {
+                      if (serverFingerprint) {
+                        pinFingerprint(serverFingerprint)
+                      }
+                    }}
+                  >
+                    {t('syncTlsPinUseServer')}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <div className={syncStyles.hint}>{t('syncTlsBrowserHint')}</div>
+            )}
+          </div>
+        }
+      />
+      <Row
         label={t('syncDeviceLabel')}
         htmlFor={deviceId}
         description={t('syncDeviceDescription')}
@@ -505,6 +678,11 @@ export const SyncSettings = () => {
                     code: invite.code,
                     time: new Date(invite.expiresAt).toLocaleTimeString(),
                   })}
+                  {serverFingerprint ? (
+                    <div className={syncStyles.inviteFingerprint}>
+                      {t('syncGroupInviteFingerprint', { fingerprint: serverFingerprint })}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
               <div className={syncStyles.field}>

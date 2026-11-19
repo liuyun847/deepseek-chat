@@ -64,6 +64,8 @@ node sync-server/server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-s
 
 由 `local-server` 托管的浏览器页面（见下一节）可以**留空**：同步自动走同源 `/sync/api/*`，由本机服务转发到 `https://127.0.0.1:7788`，于是手机同步来的会话零配置就能看到。填了地址则优先用填的那台。
 
+**自签 HTTPS 在手机上要多一步：把证书指纹固定到设备里。** 安卓壳对自签证书一律拒绝，只有在设备上固定过服务端证书的 SHA-256 指纹时才放行（`onReceivedSslError` 里其余情况直接 cancel，不允许 TOFU）。这一串 64 位小写十六进制在四个地方完全一致：服务启动日志、`node sync-server/gen-cert.mjs` 的输出、`GET /api/health` 与 `GET /` 的 `certFingerprint`、以及建组/生成配对码响应里的 `certFingerprint`（电脑上的页面会显示它并给一个**复制**按钮）。把它粘贴到 设置 → 多端同步 →「服务端证书指纹」→「保存指纹」：冒号、空格与大小写都会被规范化，页面通过 `window.__dsSync.setTlsPin()` → `Bridge.setSyncTlsPin` 交给原生，写进 SharedPreferences，**进程重启后仍然有效**。没固定之前设置页会显示红字提示，测试连接/同步/建组都会给出明确文案，而不是一句含糊的「连不上服务」。换证书（`gen-cert.mjs --force`）会改变指纹，每台手机都要重新固定一次。浏览器里没有这座桥：网页同步由本机服务校验 CA 文件或浏览器信任链负责。想不拿手机就验「没 pin / 错 pin / 对 pin」三种情况，跑 `node tools/tls-pin-sim.mjs --url https://<主机>:7788 [--pin <指纹>]`（退出码 0 通过 / 2 没 pin 被拒 / 3 指纹不匹配）。
+
 数据文件被外部更新后**不需要重启 sync-server**：它在 `/api/health`、`/api/state`、`POST /api/sync` 处理前先 stat 一次，发现被别处写过就重读并按 LWW 并进内存——手机 P2P 推来的会话因此立刻能在浏览器看到。
 
 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 每次登录用无窗口的 Windows PowerShell 5.1 跑一次 `sync-server\start.ps1`（与下一节的 Web 服务同一套范式；改名成 `.vbs.disabled` 即关闭，它自己的 stderr 落在 `sync-server\logs\autostart.err.log`）。只监听 `127.0.0.1:7788`：手机走 P2P（`lan-peer`）到这台电脑，不经过这个端口。

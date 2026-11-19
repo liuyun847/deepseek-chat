@@ -142,6 +142,40 @@
   word-break: break-all;
 }
 
+/* 配对码下面附带的证书指纹：换行显示，避免撑破窄屏 */
+.inviteFingerprint {
+  margin-top: 4px;
+  font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: var(--ds-fs-11);
+  line-height: var(--ds-lh-16);
+}
+
+/** 证书指纹行的左侧小标题（服务端 / 本机已固定） */
+.fingerprintLabel {
+  flex-shrink: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
+}
+
+/**
+ * 指纹本身：64 位十六进制，等宽字体、可换行。
+ * 换行是必须的 —— 窄屏一行放不下 64 个字符，不换行就会把整个设置页撑出横向滚动条。
+ */
+.fingerprint {
+  box-sizing: border-box;
+  flex: 1 1 220px;
+  min-width: 0;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--ds-font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
+  word-break: break-all;
+}
+
 .hint {
   font-size: var(--ds-fs-12);
   line-height: var(--ds-lh-18);

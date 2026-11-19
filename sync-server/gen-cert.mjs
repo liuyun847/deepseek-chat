@@ -15,11 +15,12 @@
  */
 
 import { spawnSync } from 'node:child_process'
-import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+import { certFingerprintFromPem } from './cert-fingerprint.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
@@ -31,12 +32,22 @@ const FORCE = args.includes('--force')
 const CERT = path.join(DIR, 'cert.pem')
 const KEY = path.join(DIR, 'key.pem')
 
-/** 读取已有证书的 SHA-256 指纹并打印 */
+/**
+ * 读取已有证书并打印规范格式的 SHA-256 指纹（64 位小写十六进制、无分隔符）。
+ *
+ * 与 server.mjs 的启动日志、接口里的 certFingerprint 用的是同一份实现
+ * （cert-fingerprint.mjs），也和 Android 的 setSyncTlsPin 判据逐字节一致：
+ * 手机「多端同步 → 证书指纹」要填的就是这一串，冒号写法也能过（手机端会去掉再比对）。
+ *
+ * @param certPath PEM 证书路径
+ * @sideeffect 只往 stdout 打印路径与指纹，不打印私钥内容
+ */
 const printFingerprint = (certPath) => {
-  const cert = new crypto.X509Certificate(fs.readFileSync(certPath))
+  const fingerprint = certFingerprintFromPem(fs.readFileSync(certPath))
   console.log('[tls] 证书：%s', certPath)
-  console.log('[tls] 私钥：%s', KEY)
-  console.log('[tls] SHA-256 指纹：%s', cert.fingerprint256)
+  console.log('[tls] 私钥：%s（不要外传、不要进仓库）', KEY)
+  console.log('[tls] SHA-256 指纹：%s', fingerprint)
+  console.log('[tls] 手机端「多端同步 → 证书指纹」填这一串（64 位十六进制）')
   console.log('[tls] 启动：node sync-server/server.mjs --tls-cert %s --tls-key %s', certPath, KEY)
 }
 
