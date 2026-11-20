@@ -19,8 +19,18 @@
     切换步骤。要切 HTTPS：先 .\local-server\stop.ps1，再 node sync-server\gen-cert.mjs，
     然后重启 sync-server 与 local-server（两个都得重启，只重启一个反而会错配）。
 
-  只监听回环：不传 --host，server.mjs 默认就是 127.0.0.1。手机走 P2P（lan-peer）不经过它，
-  对局域网开放只会多一个读写全库的口子；真要开放得自己加 --host 0.0.0.0 并配 --token。
+  默认只监听回环：不传 --host，server.mjs 默认就是 127.0.0.1。手机走 P2P（lan-peer）
+  不经过它；对局域网开放只会多一个读写全库的口子，所以默认关闭。
+
+  对局域网开放（-Lan，默认关闭）：等价于 --host 0.0.0.0 + 必需口令。
+    口令来源（按顺序）：-Token 参数 > SYNC_TOKEN 环境变量 > .secrets 目录下 sync-token.txt 首行。
+    三处都没有就拒绝启动并打印怎么生成一份 —— 绝不无口令暴露在局域网里。
+    口令通过 SYNC_TOKEN 环境变量交给子进程（不写进命令行，免得进进程列表和日志），
+    本脚本只打印「已启用」，永远不打印口令本身。
+    开放时日志会明确写「已对局域网开放」并给出手机该连的地址；看不到那句就说明仍是回环模式。
+
+  -PublicHost <host:port>：透传给 server.mjs 的 --public-host，二维码里就用这个地址
+  （反代 / 端口映射 / 域名场景）；不给则由服务端自己枚举本机网卡。
 
   为什么不用 -RedirectStandardOutput/-RedirectStandardError 收服务日志（刻意）：
     Start-Process 一旦带重定向，就会以「继承句柄」的方式拉起子进程，于是长驻的 node 会把
@@ -49,7 +59,16 @@ param(
     # TLS 证书/私钥；留空则用 tls\cert.pem + tls\key.pem 或自动生成
     [string]$TlsCert = '',
 
-    [string]$TlsKey = ''
+    [string]$TlsKey = '',
+
+    # 对局域网开放（等价 --host 0.0.0.0 + 必需口令）。默认关闭：开机自启不带这个开关。
+    [switch]$Lan,
+
+    # -Lan 时用的口令；留空则依次找 SYNC_TOKEN 环境变量、.secrets 目录下的 sync-token.txt
+    [string]$Token = '',
+
+    # 透传给 server.mjs 的 --public-host（手机该连的地址，如 192.168.1.10:7788）
+    [string]$PublicHost = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -88,18 +107,61 @@ if ($Port -le 0) {
     }
 }
 
+# ── 局域网开放（-Lan）──────────────────────────────────────────────────────
+# 默认关闭：开机自启的 vbs 不带这个开关，所以「自启 = 只监听 127.0.0.1」这条不变。
+# 放开时必须同时给口令 —— server.mjs 对「非回环 + 无口令」是硬拒绝（exit 1）。
+$ListenHost = '127.0.0.1'
+$LanToken = ''
+# 健康探测要用的口令（空串 = 不带 Authorization，即回环无口令的常规情形）
+$HealthToken = ''
+$RepoRoot = Split-Path -Parent $ServerDir
+if ($Lan) {
+    $ListenHost = '0.0.0.0'
+    $LanToken = $Token
+    if (-not $LanToken -and $env:SYNC_TOKEN) { $LanToken = [string]$env:SYNC_TOKEN }
+    $TokenFile = Join-Path (Join-Path $RepoRoot '.secrets') 'sync-token.txt'
+    if (-not $LanToken -and (Test-Path -LiteralPath $TokenFile)) {
+        $firstLine = @(Get-Content -LiteralPath $TokenFile -TotalCount 1)
+        if ($firstLine.Count -gt 0) { $LanToken = ([string]$firstLine[0]).Trim() }
+    }
+    if (-not $LanToken) {
+        Write-LogLine '失败：-Lan 需要访问口令（局域网里没有口令等于把全部会话公开）。三选一：'
+        Write-LogLine '  1) 本次直接给：.\sync-server\start.ps1 -Lan -Token <口令>'
+        Write-LogLine '  2) 会话级环境变量：先设 SYNC_TOKEN，再跑 .\sync-server\start.ps1 -Lan'
+        Write-LogLine ('  3) 落盘一次（.secrets 已被 git 忽略）：把一行随机口令写进 ' + $TokenFile)
+        Write-LogLine '       随机口令随便生成一个即可（例如 [guid]::NewGuid().ToString()）'
+        exit 1
+    }
+    # 口令走环境变量交给子进程：不写进命令行，进程列表与 start.log 里都不会出现它
+    $env:SYNC_TOKEN = $LanToken
+    # 健康探测也要带口令：局域网模式下 /api/health 同样要 Bearer，不带就是 401 ——
+    # 服务明明起来了却会被判「15 秒内没有就绪」，幂等分支也会误判成「没在跑」
+    $HealthToken = $LanToken
+} elseif ($Token) {
+    Write-LogLine '提示：给了 -Token 但没给 -Lan，本次仍只监听 127.0.0.1，口令不生效'
+}
+
 # 取 /api/health；不通时返回 $null（不抛异常）
 function Get-Health {
     param([int]$ListenPort)
     $uri = ('{0}://127.0.0.1:{1}/api/health' -f $Scheme, $ListenPort)
+    $authValue = ''
+    # 开了口令就必须带上，否则 401 会被当成「还没就绪」
+    if ($HealthToken) { $authValue = 'Bearer ' + $HealthToken }
     # HTTPS（自签）走 curl -k：PowerShell 5.1 与 7 都没法用脚本块做证书回调
     # （回调跑在 TLS 握手的线程池线程上，没有 Runspace，设了 ServerCertificateValidationCallback
-    # 也照样握手失败）。实测 2026-11-20：服务已在 HTTPS 上跑、curl -k 能拿到 200，但
-    # Invoke-WebRequest 一直报「基础连接已经关闭」→ 就绪判断永远失败、幂等分支还会误判成端口被占。
+    # 也照样握手失败）。实测 2026-11-20：服务已在 HTTPS 上跑、curl -k 能拿到 200，
+    # 但 Invoke-WebRequest 一直报「基础连接已经关闭」→ 就绪判断永远失败、幂等分支还会误判成端口被占。
     # curl.exe 是 Windows 10 1803+ 自带的（C:\Windows\System32\curl.exe），没有就退回 Invoke-WebRequest。
     if ($UseTls) {
         $curlCmd = Get-Command curl.exe -ErrorAction SilentlyContinue
-        if ($curlCmd) {
+        if ($curlCmd -and $authValue) {
+            try {
+                $raw = & $curlCmd.Source -s -k --max-time 3 -H ('Authorization: ' + $authValue) $uri
+                if ($LASTEXITCODE -eq 0 -and $raw) { return ($raw | ConvertFrom-Json) }
+            } catch { }
+            return $null
+        } elseif ($curlCmd) {
             try {
                 $raw = & $curlCmd.Source -s -k --max-time 3 $uri
                 if ($LASTEXITCODE -eq 0 -and $raw) { return ($raw | ConvertFrom-Json) }
@@ -108,7 +170,13 @@ function Get-Health {
         }
     }
     try {
-        $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri $uri
+        $reqArgs = @{
+            UseBasicParsing = $true
+            TimeoutSec = 3
+            Uri = $uri
+        }
+        if ($HealthToken) { $reqArgs.Headers = @{ Authorization = $authValue } }
+        $response = Invoke-WebRequest @reqArgs
         if ($response.StatusCode -ne 200) { return $null }
         return ($response.Content | ConvertFrom-Json)
     } catch {
@@ -242,11 +310,18 @@ if ($UseTls) {
 }
 
 Write-LogLine ('=== start.ps1 开始（端口 {0}）===' -f $Port)
+if ($Lan) {
+    Write-LogLine '已开启局域网模式（-Lan）：将监听 0.0.0.0，口令已启用（本脚本不打印口令）'
+}
 
 $health = $null
 if (Test-PortBusy -ListenPort $Port) { $health = Get-Health -ListenPort $Port }
 if ($health -and $health.format -eq $SyncFormat) {
     Write-LogLine ('已在运行：{0}://127.0.0.1:{1}/api/health （format={2}，记录 {3} 条，会话 {4} 个）' -f $Scheme, $Port, $health.format, $health.records, $health.sessions)
+    if ($Lan) {
+        Write-LogLine '注意：服务已经在跑，本脚本不会重启它 —— 它当初是不是用 -Lan 起的无从判断'
+        Write-LogLine '      要切到局域网模式：先 .\sync-server\stop.ps1，再用 start.ps1 -Lan 起一次'
+    }
     Write-LogLine '无需重复启动（幂等），退出码 0'
     exit 0
 }
@@ -274,6 +349,8 @@ Write-LogLine ('启动：{0} {1} --port {2}（{3}）' -f $nodePath, $serverScrip
 Write-LogLine ('工作目录 {0}，隐藏窗口；不带 -Redirect（见文件头：避免长驻 node 占住自启的 stderr 文件）' -f $ServerDir)
 
 $argList = @(('"' + $serverScript + '"'), '--port', [string]$Port)
+if ($ListenHost -ne '127.0.0.1') { $argList += @('--host', $ListenHost) }
+if ($PublicHost) { $argList += @('--public-host', $PublicHost) }
 if ($UseTls) {
     $argList += @('--tls-cert', ('"' + $TlsCert + '"'), '--tls-key', ('"' + $TlsKey + '"'))
 }
@@ -316,6 +393,15 @@ if ($UseTls) {
     Write-LogLine ('本机服务反代：设置 SYNC_UPSTREAM={0}://127.0.0.1:{1} 并配 SYNC_CA_FILE={2}' -f $Scheme, $Port, $TlsCert)
 } else {
     Write-LogLine ('本机服务反代：SYNC_UPSTREAM={0}://127.0.0.1:{1}（http，无需 SYNC_CA_FILE）' -f $Scheme, $Port)
+}
+if ($Lan) {
+    # 这一行是「对局域网开放」的唯一权威提示：看不到它就说明仍是回环模式
+    Write-LogLine ('已对局域网开放：{0}:{1}，口令已启用（未打印）' -f $ListenHost, $Port)
+    Write-LogLine '  手机该连哪个地址见服务端启动日志里的「扫码配对：手机连 …」；要指定就加 -PublicHost'
+    Write-LogLine '  回到只监听本机：stop.ps1 之后不带 -Lan 再启动'
+}
+if ($PublicHost) {
+    Write-LogLine ('已指定对外地址（--public-host）：{0}' -f $PublicHost)
 }
 Write-LogLine '停止：.\sync-server\stop.ps1'
 Write-LogLine '=== start.ps1 结束（成功）==='

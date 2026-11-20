@@ -161,7 +161,13 @@ Test-Ok ($badging -match 'android\.permission\.INTERNET') '已声明 INTERNET �
 # 否则广播只发不收（表现为「别人看得见我、我看不见别人」）。
 Test-Ok ($badging -match 'android\.permission\.CHANGE_WIFI_MULTICAST_STATE') '已声明 CHANGE_WIFI_MULTICAST_STATE 权限（组播锁）'
 $permCount = ([regex]::Matches($badging, 'uses-permission:')).Count
-Test-Ok ($permCount -eq 2) "权限正好 2 条：INTERNET + CHANGE_WIFI_MULTICAST_STATE（实际 $permCount 条）"
+# 扫码配对要 Camera2 预览：CAMERA 是 dangerous 权限（targetSdk 34 必须运行时申请，
+# 见 ScanActivity.ensurePermissionThenOpen）。它是本项目唯一会弹系统对话框的权限。
+Test-Ok ($badging -match 'android\.permission\.CAMERA') '已声明 CAMERA 权限（扫码）'
+Test-Ok ($permCount -eq 3) "权限正好 3 条：INTERNET + CHANGE_WIFI_MULTICAST_STATE + CAMERA（实际 $permCount 条）"
+# required=false 在 badging 里是单独一行 uses-feature-not-required：
+# 它保证「无相机的设备也能装」，扫码界面此时只剩「从图片选择」。
+Test-Ok ($badging -match 'uses-feature-not-required:\s*name=.android\.hardware\.camera.') '相机声明为非必需（无相机设备仍可安装）'
 Test-Ok ($badging -match 'launchable-activity.*ds\.app\.MainActivity') '启动 Activity 就位'
 
 # ── 6. 网络安全配置（局域网同步依赖它）────────────────────────────────────
@@ -169,6 +175,8 @@ Write-Host ''
 Write-Host '【网络安全配置】' -ForegroundColor Yellow
 $xmltree = (& (Join-Path $Bt 'aapt2.exe') dump xmltree $Apk --file AndroidManifest.xml 2>&1) -join [Environment]::NewLine
 Test-Ok ($xmltree -match 'networkSecurityConfig') 'manifest 引用了 networkSecurityConfig'
+# 扫码界面是独立 Activity（不是叠在 WebView 上），未导出：只有本应用能拉起
+Test-Ok ($xmltree -match 'ds\.app\.ScanActivity') '扫码 Activity（ds.app.ScanActivity）在清单里'
 # 与配置文件并存时 API 24+ 以配置文件为准。留着 usesCleartextTraffic 只会让读代码的人
 # 以为明文还禁着 —— 两处设置打架是这类 bug 最常见的来源
 Test-Ok ($xmltree -notmatch 'usesCleartextTraffic') 'usesCleartextTraffic 已移除（不与配置文件互相误导）'

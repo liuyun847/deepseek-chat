@@ -26,6 +26,22 @@
     -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!--
+      扫码配对要用 Camera2 预览。CAMERA 是 dangerous 权限，targetSdk 34 下必须运行时申请
+      （ScanActivity.ensurePermissionThenOpen → requestPermissions，不用 AndroidX）。
+
+      这是本项目**唯一**一条会弹系统对话框的权限。拒绝也不影响其余功能：
+      扫码界面会降到「从图片选择」，设置页里还能直接粘贴配对串。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!--
+      required="false"：不把「有摄像头」当成安装前提。没有相机的设备（部分平板、模拟器）
+      照样能装，只是扫码界面直接给「从图片选择」—— 这条声明就是那句保证的出处，
+      tools/verify-apk.ps1 里有断言钉着它。
+    -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
 
     <!--
@@ -58,5 +74,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          扫码界面：独立 Activity（不是盖在 WebView 上的一层预览），结果只走
+          setResult → MainActivity.onActivityResult → evaluateJavascript 回页面。
+
+          exported="false"：只有本应用能拉起它。
+          configChanges 与 MainActivity 同一套：旋转/改字号时不重建，正在跑的预览不会断
+          （重建会让「相机已经交给旧实例」变成 Camera in use）。
+          parentActivityName 不写：本应用不用 ActionBar/向上导航。
+        -->
+        <activity
+            android:name="ds.app.ScanActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|fontScale"
+            android:theme="@style/ScanTheme" />
     </application>
 </manifest>

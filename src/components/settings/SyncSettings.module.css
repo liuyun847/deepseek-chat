@@ -306,3 +306,42 @@
   }
 }
 
+/* ── 扫码配对（手机这一侧）─────────────────────────────────────────────────
+ * 与上面的 .pairCard（电脑这一侧画码）成对：这一块是「输入配对信息」的一端，
+ * 平时只有一行（扫码按钮 + 粘贴框），解析成功后展开一张确认卡。
+ */
+.pairScan {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: 8px;
+  width: 100%;
+  max-width: 360px;
+  padding: 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+}
+
+/* 确认卡：套一层浅底，和上面的输入行区分开（不是弹窗 —— 扫码后还得能看见设置项） */
+.pairScanConfirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: var(--dsw-alias-button-ghost-active-fill);
+}
+
+/* 错误文案（解析失败、过期、权限被拒） */
+.pairScanError {
+  color: var(--dsw-alias-state-error-primary);
+  font-size: var(--ds-fs-12);
+  line-height: var(--ds-lh-18);
+}
+
+@media not all and (min-width: 768px) {
+  .pairScan {
+    max-width: 100%;
+  }
+}

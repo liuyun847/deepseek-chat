@@ -47,8 +47,14 @@ pnpm --config.shell-emulator=true build   # 前端产物
 
 | 输入 | classes.dex | APK 内压缩后 |
 | --- | --- | --- |
-| 不加 jar（现状） | 42.1 KB | 20.9 KB |
-| 加整包 jar | 约 570 KB（+528 KB） | 见 `.dsh\.project\deepseek-chat-本地服务\QR-PAIRING-M123.md` 的实测 |
+| 不加 jar（阶段 1） | 42.1 KB | 20.9 KB |
+| 加整包 jar（M3，只有 jar 没人用） | 567.7 KB | 285.1 KB |
+| **加整包 jar + 扫码代码（M4 现状）** | **589.6 KB** | **294.6 KB** |
+
+M4 之后的实际使用者是 `android/java/ds/app/QrDecode.java`（解码，零 `android.*` 依赖）
+与 `ScanActivity.java`（Camera2 取帧、从图片选择）。解码这一段能不接真机验证：
+`tools\qr-decode-check.ps1` 把同一份 `QrDecode.java` 编到桌面 JVM 上跑固定样本（见
+`tools/qr-samples/`）。
 
 **jar 本身不会进 APK**：只有 classes.dex 会被加载。所以 d8 必须把 jar 一起转 dex，
 否则运行期表现为 `NoClassDefFoundError: com.google.zxing...`。

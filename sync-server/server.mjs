@@ -1518,6 +1518,11 @@ server.listen(PORT, HOST, () => {
   }
   if (TOKEN) {
     console.log('[sync] 访问口令：已启用（/api/* 需 Authorization: Bearer <口令> 或 X-Sync-Token）')
+    // 「对局域网开放」是部署侧的关键事实，必须在不看启动命令的人也看得见的地方出现一次：
+    // start.ps1 用 -Lan 起来时也会打一行同样的话（那边是脚本级，这里是服务端自报）。
+    if (!LOOPBACK_HOSTS.has(String(HOST).toLowerCase())) {
+      console.log('[sync] 已对局域网开放：监听 %s（口令已启用，局域网内其它设备可访问）', HOST)
+    }
   } else {
     console.warn('[sync] ⚠ 未设口令，仅建议本机使用：能访问本端口的人都能读写全部会话')
     console.warn('[sync]   需要口令时加 --token <口令>，或设环境变量 SYNC_TOKEN')

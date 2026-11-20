@@ -65,12 +65,21 @@ export const PairQr = ({
 
   const remain = expiresAt - now
   const expired = remain <= 0
-  // 过期后不再算矩阵：SVG 直接从 DOM 里消失，而不是留在那儿只是变灰
-  const matrix = useMemo(() => {
+  /**
+   * 过期后不再算矩阵：SVG 直接从 DOM 里消失，而不是留在那儿只是变灰。
+   *
+   * 编不出来时（超长 / 库拒绝）**只让二维码变空**，不能把异常抛进渲染：一张画不出来的码
+   * 不该让整页设置白屏，剩下的手填码路径仍然可用。
+   */
+  const { matrix, matrixError } = useMemo(() => {
     if (!pair.uri || expired) {
-      return null
+      return { matrix: null, matrixError: null }
     }
-    return pairQrMatrix(pair.uri, QUIET)
+    try {
+      return { matrix: pairQrMatrix(pair.uri, QUIET), matrixError: null }
+    } catch (error) {
+      return { matrix: null, matrixError: error instanceof Error ? error.message : String(error) }
+    }
   }, [pair.uri, expired])
 
   if (!pair.reachable || !pair.uri) {
@@ -116,7 +125,9 @@ export const PairQr = ({
           </svg>
         ) : (
           <div className={syncStyles.pairExpired} data-ds-pair-expired>
-            {t('syncPairExpired')}
+            {matrixError
+              ? t('syncPairMatrixFailed', { message: matrixError })
+              : t('syncPairExpired')}
           </div>
         )}
       </div>

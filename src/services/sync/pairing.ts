@@ -8,12 +8,14 @@
  * 127.0.0.1:7789 —— 手机连上去等于连自己。所以串由服务端组装（sync-server/pair-uri.mjs），
  * 页面只做两件事：把 uri 画成矩阵、把扫回来的串解析成字段。
  *
- * 解析有两个真坑（服务端那份 parsePairUri 同样处理）
- * ================================================
+ * 解析有三个真坑（服务端那份 parsePairUri 只管前两个，它只在 Node 里跑）
+ * ==============================================================
  *   1) 自定义 scheme 的 hostname 不自动小写：new URL('DEEPSEEK-SYNC://PAIR?...').hostname === 'PAIR'。
  *      http(s) 这类 special scheme 才会小写 —— 别把浏览器的习惯带过来，判据必须 toLowerCase()。
  *   2) 带斜杠也合法：deepseek-sync://pair/?v=1 的 pathname 是 '/'，解析要忽略 pathname，
  *      不能断言它为空。
+ *   3) **旧 WebView 上 new URL('deepseek-sync://pair?...').hostname 是空串**（Chromium 91 实测），
+ *      现代引擎给 'pair'。所以 authority 与 scheme 全部从原始文本切，见 authorityOf()。
  *
  * 复用而不是重写：地址规范沿用 api.ts 的 normalizeServerUrl（含「明文只许回环」这条），
  * 指纹规范沿用 tls.ts 的 normalizeCertFingerprint（全仓唯一的一套 [0-9a-f]{64} 规则）。
@@ -66,6 +68,41 @@ export type ParsedPair = {
 export type PairParseResult = ({ ok: true } & ParsedPair) | { ok: false; reason: PairFailure }
 
 /**
+ * 取「scheme://authority」里的 authority（小写），不走 URL.hostname。
+ *
+ * 为什么不用 URL（第三个坑，M4 实测踩到）
+ * ======================================
+ * 旧 WebView 对**非特殊 scheme** 的 authority 处理和新规范不一致：
+ * 本机雷电 9 的 WebView 是 Chromium 91，在那里
+ *   new URL('deepseek-sync://pair?v=1').hostname === ''      ← 空串！
+ * 而 Node 24 / 现代浏览器给 'pair'。靠 hostname 判定「是不是本应用的码」，
+ * 在真机（旧 WebView）上会把每一条合法串都判成 scheme 失败 —— 实测 APP 里扫码与粘贴
+ * 两条路全红，而 Node 侧的工具全绿，正是这类「引擎差异」最难查的地方。
+ *
+ * 所以 scheme 与 authority 都从原始文本切（纯字符串操作，跨引擎一致），
+ * URL 只用来读 searchParams（这一条各引擎行为一致）。
+ *
+ * @param text 原始串（未 trim 也行，调用方已 trim）
+ * @param scheme scheme 名（不带冒号）
+ * @returns authority 的小写形式；scheme 不匹配时返回 null
+ */
+const authorityOf = (text: string, scheme: string): string | null => {
+  const prefix = scheme + '://'
+  if (text.slice(0, prefix.length).toLowerCase() !== prefix) {
+    return null
+  }
+  const rest = text.slice(prefix.length)
+  let end = rest.length
+  for (const stop of ['/', '?', '#']) {
+    const index = rest.indexOf(stop)
+    if (index >= 0 && index < end) {
+      end = index
+    }
+  }
+  return rest.slice(0, end).toLowerCase()
+}
+
+/**
  * 解析配对串。
  *
  * 只判格式与字段，不发请求；x 过期只置 expired 标记（服务端才是闸）。
@@ -82,6 +119,12 @@ export const parsePairUri = (raw: string, now: number = Date.now()): PairParseRe
   if (text.length > MAX_PAIR_URI_LENGTH) {
     return { ok: false, reason: 'length' }
   }
+  // 坑 1 + 坑 3：scheme 与 authority 一律从文本切（旧 WebView 的 URL.hostname 对
+  // 非特殊 scheme 给空串，且不自动小写）。URL 只留给 searchParams 用。
+  const authority = authorityOf(text, PAIR_SCHEME)
+  if (authority !== PAIR_HOST) {
+    return { ok: false, reason: 'scheme' }
+  }
   let url: URL
   try {
     url = new URL(text)
@@ -89,10 +132,6 @@ export const parsePairUri = (raw: string, now: number = Date.now()): PairParseRe
     return { ok: false, reason: 'scheme' }
   }
   if (url.protocol !== PAIR_SCHEME + ':') {
-    return { ok: false, reason: 'scheme' }
-  }
-  // 坑 1：自定义 scheme 的 hostname 不自动小写
-  if (url.hostname.toLowerCase() !== PAIR_HOST) {
     return { ok: false, reason: 'scheme' }
   }
   // 坑 2：pathname 可能是 '/'，忽略它（不做任何断言）
@@ -203,6 +242,19 @@ export type PairQr = {
 }
 
 /**
+ * 能把内容编成二维码的长度上限（字符）。超了由 pairQrMatrix 抛错，不交给库自己抛。
+ *
+ * 为什么需要一个自己的上限：qrcode-generator 的 addData 只接受 8 位字节模式，
+ * 到 v40（最高的那一版）也放不下 2953 字节，超过就抛「code length overflow」——
+ * 一旦这个异常从渲染路径里冒出去，整张设置页会白屏。而录入路径（粘贴任意文本、
+ * 扫到别人的码）本身可能给出任意长度的串，所以必须在这里拦一道。
+ *
+ * 取 1200 是为了给真实取值留 8 倍余量（最长 139 字符），同时远离库的上限：v40 在
+ * 纠错级别 M 下约 2331 字节，1200 字符一定编得出来。
+ */
+export const MAX_PAIR_QR_LENGTH = 1200
+
+/**
  * 把配对串编成二维码矩阵。
  *
  * 不用库自带的 createSvgTag：它逐模块吐 <rect>，同一张码 33 KB；这里每行合并相邻黑模块，
@@ -212,12 +264,29 @@ export type PairQr = {
  * @param uri 配对串
  * @param quiet 静区模块数，默认 4（规范值；小于 4 会让部分扫码器找不到定位）
  * @returns 矩阵数据
+ * @throws 内容为空或超过 MAX_PAIR_QR_LENGTH，或库自身编不出来（v40 也放不下）
  */
 export const pairQrMatrix = (uri: string, quiet = 4): PairQr => {
+  const text = typeof uri === 'string' ? uri : ''
+  if (!text) {
+    throw new Error('二维码内容为空')
+  }
+  if (text.length > MAX_PAIR_QR_LENGTH) {
+    throw new Error(
+      '二维码内容过长：' + text.length + ' 字符，上限 ' + MAX_PAIR_QR_LENGTH + ' 字符'
+    )
+  }
   // 纠错级别 M：屏幕对屏幕的常规取值（约 15% 容错），且不把版本推高，见设计文档 2.3
   const qr = qrcode(0, 'M')
-  qr.addData(uri)
-  qr.make()
+  try {
+    qr.addData(text)
+    qr.make()
+  } catch (error) {
+    // 走到了长度上限之外的原因（编码表/库自身限制）：换成一眼能懂的说法，别把库的错抛给界面
+    throw new Error(
+      '这段内容无法生成二维码：' + (error instanceof Error ? error.message : String(error))
+    )
+  }
   const modules = qr.getModuleCount()
   const rows: string[] = []
   for (let row = 0; row < modules; row += 1) {

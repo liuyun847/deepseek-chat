@@ -249,6 +249,35 @@ const main = async () => {
   const noPort = parsePairUri('deepseek-sync://pair?v=1&h=192.168.124.10&c=ABCD2345&f=' + FINGERPRINT)
   check('L1 省略端口补 7788', noPort.ok && noPort.host === '192.168.124.10:7788', JSON.stringify(noPort))
 
+  /**
+   * 坑 3：旧 WebView 上 new URL(...).hostname 对非特殊 scheme 给空串。
+   *
+   * 本机雷电 9 的 WebView 是 Chromium 91，实测 new URL('deepseek-sync://pair?v=1').hostname === ''，
+   * 而 Node 24 给 'pair'。M4 第一版解析器用 hostname 判定，结果「Node 里全绿、APP 里扫码与粘贴全红」。
+   * 这里直接把全局 URL 换成一个「按 Chromium 91 行为」的替身，钉住「解析器不依赖 hostname」这条。
+   */
+  const RealURL = globalThis.URL
+  class Chromium91URL extends RealURL {
+    /** 非特殊 scheme 的 authority 在旧引擎里解析不出来 → hostname 返回空串 */
+    get hostname() {
+      const scheme = String(this.protocol || '')
+      const special = scheme === 'http:' || scheme === 'https:' || scheme === 'ws:' || scheme === 'ftp:'
+      return special ? super.hostname : ''
+    }
+  }
+  globalThis.URL = Chromium91URL
+  let legacy
+  try {
+    legacy = parsePairUri(withFingerprint, 1765000000000)
+  } finally {
+    globalThis.URL = RealURL
+  }
+  check(
+    'L1 旧 WebView（hostname 为空）仍能解析（坑 3）',
+    legacy.ok && legacy.host === '192.168.124.10:7788' && legacy.code === 'ABCD2345',
+    JSON.stringify(legacy)
+  )
+
   // 各类失败分支
   const failuresExpected = [
     ['缺 v', 'deepseek-sync://pair?h=192.168.124.10:7788&c=ABCD2345', 'version'],
