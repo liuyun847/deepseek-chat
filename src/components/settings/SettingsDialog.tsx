@@ -7,7 +7,6 @@ import {
   IconEditOutline16,
   IconFollowsystemOutline16,
   IconLightOutline16,
-  IconLinkOutline16,
   IconRefreshOutline16,
   IconSettingsOutline16,
   IconUploadOutline14,
@@ -42,7 +41,6 @@ import { Select } from '../base/Select.js'
 import { showToast } from '../base/toastState.js'
 import { ApiKeyConfirm, ApiKeyField, useApiKeyEditor } from './ApiKeyField.js'
 import { closeSettings, useSettingsDialog, type SettingsSection } from './settingsDialogState.js'
-import { LanSettings } from './LanSettings.js'
 import { SyncSettings } from './SyncSettings.js'
 import { SystemPromptSettings } from './SystemPromptSettings.js'
 import styles from './Settings.module.css'
@@ -72,11 +70,6 @@ const sections: { value: SettingsSection; label: TranslationKey; icon: ReactNode
     value: 'sync',
     label: 'settingDialogAsideSyncOptionLabel',
     icon: <IconRefreshOutline16 />,
-  },
-  {
-    value: 'lan',
-    label: 'settingDialogAsideLanOptionLabel',
-    icon: <IconLinkOutline16 />,
   },
   { value: 'data', label: 'settingDialogAsideDataOptionLabel', icon: <IconDataOutline16 /> },
 ]
@@ -134,8 +127,6 @@ const SettingsContent = () => {
             <SystemPromptSettings />
           ) : section === 'sync' ? (
             <SyncSettings />
-          ) : section === 'lan' ? (
-            <LanSettings />
           ) : (
             <>
               <ApiKeyField editor={apiKeyEditor} />

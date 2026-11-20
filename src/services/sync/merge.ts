@@ -105,7 +105,7 @@ export type BuildLocalInput = {
   /** 当前时间（注入便于确定性验证） */
   now: number
   /**
-   * 要同步的设置整份（已剔除 apiKey / syncDeviceId / LAN 键）。
+   * 要同步的设置整份（已剔除 apiKey / syncDeviceId）。
    * 省略或 null 表示本端这次不产出设置记录（例如存储读不出来），此时已有记录原样保留，
    * 不会被当成「本地删除了设置」而墓碑化。
    */

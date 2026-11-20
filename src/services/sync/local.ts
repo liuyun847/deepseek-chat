@@ -25,11 +25,9 @@ import type {
  * ==============
  * 会话与消息存在 IndexedDB（chat-demo / chat-demo-sync），落地走 merge.ts 的
  * applyPulledRecords；而设置与提示词存在 localStorage，落地是「写键 + 让 zustand 立刻反映」。
- * 两条通道（HTTP 的 engine.ts、点对点的 lan/exchange.ts）都用这一份胶水，
- * 合并规则仍然只有 merge.ts / protocol.ts 一套。
+ * HTTP 通道（engine.ts）用这一份胶水，合并规则仍然只有 merge.ts / protocol.ts 一套。
  *
- * 边界：这里只写白名单键 —— apiKey、syncDeviceId、LAN 相关键（lan-enabled / lan-key /
- * lan-pair-tag / lan-peers）没有任何写入口，远端记录带过来的值也盖不到它们。
+ * 边界：这里只写白名单键 —— apiKey、syncDeviceId 没有任何写入口，远端记录带过来的值也盖不到它们。
  */
 
 /** 本端要参与同步的非会话数据（可以直接展开进 buildLocalRecords 的入参） */

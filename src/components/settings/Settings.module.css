@@ -99,19 +99,6 @@
   padding-right: 48px;
 }
 
-/* 右侧操作区偏宽的行（手机直连的口令行）：窄屏时说明与操作分行，避免说明文字被挤成一列 */
-.passphraseCell {
-  flex-wrap: wrap;
-  row-gap: 8px;
-}
-
-@media not all and (min-width: 768px) {
-  .passphraseCell .text {
-    flex-basis: 100%;
-    padding-right: 0;
-  }
-}
-
 .label {
   font-size: var(--ds-fs-14);
   line-height: var(--ds-lh-22);
