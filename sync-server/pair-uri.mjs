@@ -178,6 +178,29 @@ export function resolvePairTarget({ listenHost, port, publicHost = '', addresses
 }
 
 /**
+ * 在选好的地址上再加一道「服务端得有 TLS」的闸。
+ *
+ * 为什么地址可达还不够：手机端对非回环的明文地址是硬拒绝（src/services/sync/pairing.ts 的
+ * plaintext 分支），安卓壳也不允许 TOFU 自签证书 —— 也就是说 --host 0.0.0.0 --token 但不带
+ * 证书时，串里没有 f 字段，页面上却照样画一张「会带指纹」的码，手机扫完必然被拒。
+ * 所以没有证书指纹时一律 reachable=false（reason='no-tls'），页面据此改画「先生成证书再配对」。
+ *
+ * 地址侧的毛病（loopback / no-address）优先：默认部署两样都缺，最该说的是「开局域网模式」。
+ *
+ * @param {{ host: string | null, reachable: boolean, reason: string | null, candidates: string[] }} target
+ *     resolvePairTarget() 的结果
+ * @param {object} input
+ * @param input.hasFingerprint 服务端当前有没有证书指纹（只有 HTTPS 才有）
+ * @returns {{ host: string | null, reachable: boolean,
+ *             reason: 'loopback' | 'no-address' | 'no-tls' | null, candidates: string[] }}
+ *     不可达时 host 一律为 null（uri 也就拼不出来）
+ */
+export function requirePairTls(target, { hasFingerprint = false } = {}) {
+  if (hasFingerprint || !target.reachable) return target
+  return { host: null, reachable: false, reason: 'no-tls', candidates: [] }
+}
+
+/**
  * 组装配对串。
  *
  * @param {object} input
@@ -224,7 +247,7 @@ export function buildPairUri({ host, code, fingerprint = null, expiresAt = null 
  * @param raw 扫码/粘贴得到的原始串
  * @returns {{ ok: true, version: string, host: string, port: number, code: string,
  *             fingerprint: string | null, expiresAt: number | null }
- *           | { ok: false, reason: 'scheme' | 'version' | 'host' | 'code' | 'fingerprint' }}
+ *           | { ok: false, reason: 'scheme' | 'version' | 'host' | 'code' | 'fingerprint' | 'expiry' }}
  */
 export function parsePairUri(raw) {
   if (typeof raw !== 'string' || !raw.trim()) return { ok: false, reason: 'scheme' }
@@ -259,7 +282,7 @@ export function parsePairUri(raw) {
   let expiresAt = null
   if (expiresRaw !== null) {
     const seconds = Number(expiresRaw)
-    if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false, reason: 'host' }
+    if (!Number.isFinite(seconds) || seconds <= 0) return { ok: false, reason: 'expiry' }
     expiresAt = Math.floor(seconds) * 1000
   }
   return { ok: true, version: PAIR_VERSION, host: target.host, port: target.port, code, fingerprint, expiresAt }

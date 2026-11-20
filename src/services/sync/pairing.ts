@@ -46,8 +46,19 @@ const PAIR_HOST_PATTERN = /^[A-Za-z0-9.-]+(:\d{1,5})?$/
  */
 export const MAX_PAIR_URI_LENGTH = 512
 
-/** 解析失败的原因；界面按它选一句能照做的文案（文案在 M4/M5 的扫码界面里接） */
-export type PairFailure = 'length' | 'scheme' | 'version' | 'host' | 'plaintext' | 'code' | 'fingerprint'
+/**
+ * 解析失败的原因；界面按它选一句能照做的文案（文案在 M4/M5 的扫码界面里接）。
+ * 'expiry' 独立于 'host'：x 写错是过期时间的问题，报「服务地址不合法」会把人带去改地址。
+ */
+export type PairFailure =
+  | 'length'
+  | 'scheme'
+  | 'version'
+  | 'host'
+  | 'plaintext'
+  | 'code'
+  | 'fingerprint'
+  | 'expiry'
 
 /** 解析成功后的字段 */
 export type ParsedPair = {
@@ -165,7 +176,7 @@ export const parsePairUri = (raw: string, now: number = Date.now()): PairParseRe
   if (expiresRaw !== null) {
     const seconds = Number(expiresRaw)
     if (!Number.isFinite(seconds) || seconds <= 0) {
-      return { ok: false, reason: 'host' }
+      return { ok: false, reason: 'expiry' }
     }
     expiresAt = Math.floor(seconds) * 1000
   }

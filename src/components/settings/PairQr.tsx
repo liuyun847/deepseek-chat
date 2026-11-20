@@ -11,7 +11,7 @@ const MODULE_PX = 4
 /** 静区模块数（二维码规范值；小于 4 会让部分扫码器找不到定位图形） */
 const QUIET = 4
 
-/** 剩余时间格式化成 mm:ss（负值一律当 0） */
+/** 剩余时间格式化成 mm:ss（负值一律当 0）；塞进 syncPairRemain 的 {time} 里 */
 const formatRemain = (ms: number): string => {
   const total = Math.max(0, Math.floor(ms / 1000))
   const minutes = Math.floor(total / 60)
@@ -27,7 +27,8 @@ const formatRemain = (ms: number): string => {
  * HybridBinarizer 在暗背景上）认不出来，所以底色写死 #fff，深色主题下也一样。
  *
  * 三种状态：
- *   - pair.reachable === false：不画码，改画一条能照做的命令（默认部署就是这一种）
+ *   - pair.reachable === false：不画码，改画一条能照做的命令或提示
+ *     （默认部署是 loopback；地址有了但服务端没证书时是 no-tls，那一步要先补证书）
  *   - 没过期：画码 + 倒计时 + 复制/重新生成
  *   - 过期：**把 SVG 从 DOM 里撤掉**，换成「已过期 + 重新生成」。
  *     这一步是安全要求而不是美观要求：一张还亮着的过期二维码会被当成仍然有效。
@@ -82,13 +83,26 @@ export const PairQr = ({
     }
   }, [pair.uri, expired])
 
+  /**
+   * 不可达原因 → 一句能照做的话（服务端只给原因，文案放在界面这一层）。
+   * no-address 与 no-tls 的处理办法完全不同：前者要指定地址，后者要先生成证书。
+   */
+  const unreachableText = (reason: PairInfo['reason']): string => {
+    switch (reason) {
+      case 'no-address':
+        return t('syncPairNoAddress')
+      case 'no-tls':
+        return t('syncPairNoTls')
+      default:
+        return t('syncPairUnreachable')
+    }
+  }
+
   if (!pair.reachable || !pair.uri) {
     return (
       <div className={syncStyles.pairCard} data-ds-pair-card>
         <div className={syncStyles.pairTitle}>{t('syncPairTitle')}</div>
-        <div className={syncStyles.pairHint}>
-          {pair.reason === 'no-address' ? t('syncPairNoAddress') : t('syncPairUnreachable')}
-        </div>
+        <div className={syncStyles.pairHint}>{unreachableText(pair.reason)}</div>
         <div className={syncStyles.field}>
           <Button
             variant="outlined"
@@ -139,7 +153,7 @@ export const PairQr = ({
           </code>
         </span>
         <span className={syncStyles.pairCountdown} data-ds-pair-remain>
-          {formatRemain(remain)}
+          {t('syncPairRemain', { time: formatRemain(remain) })}
         </span>
       </div>
       <div className={syncStyles.pairHint}>{t('syncPairFingerprintNote')}</div>

@@ -81,6 +81,7 @@ import {
   PAIR_CODE_ALPHABET,
   buildPairUri,
   normalizePairHost,
+  requirePairTls,
   resolvePairTarget,
 } from './pair-uri.mjs'
 
@@ -313,20 +314,34 @@ const publicGroup = () =>
     : null
 
 /**
+ * 二维码该指向哪里、以及这张码到底能不能用（地址选择 + TLS 闸，单点）。
+ *
+ * 开机日志与 create/invite 的响应都读它：两处各判一次迟早会说出不一样的话。
+ *
+ * @returns {{ host: string | null, reachable: boolean,
+ *             reason: 'loopback' | 'no-address' | 'no-tls' | null, candidates: string[] }}
+ */
+const pairTargetNow = () =>
+  requirePairTls(
+    resolvePairTarget({ listenHost: HOST, port: PORT, publicHost: PUBLIC_HOST }),
+    { hasFingerprint: Boolean(TLS?.fingerprint) }
+  )
+
+/**
  * 建组/生成配对码响应里的 pair 字段（二维码内容与它所在的上下文）。
  *
  * uri 由服务端拼，理由见 pair-uri.mjs 文件头：网页永远在回环上，拿不到手机可连的地址。
- * reachable=false 时不编造地址（uri 为 null），页面据此改画「怎么开局域网模式」的说明 ——
- * 给一个连不上的地址比不给更糟（用户会拿着手机反复试）。
+ * reachable=false 时不编造地址（uri 为 null），页面据此改画一条能照做的说明 ——
+ * 给一个连不上的地址（或一张必然被拒的码）比不给更糟（用户会拿着手机反复试）。
  *
  * @param {object} input
  * @param input.code 本次配对的明文码（只在这里与 invite 响应里出现，服务端只存 hash）
  * @param input.expiresAt 过期时间（毫秒）
  * @returns {{ uri: string | null, host: string | null, reachable: boolean,
- *             reason: 'loopback' | 'no-address' | null, candidates: string[] }}
+ *             reason: 'loopback' | 'no-address' | 'no-tls' | null, candidates: string[] }}
  */
 function pairPayload({ code, expiresAt }) {
-  const target = resolvePairTarget({ listenHost: HOST, port: PORT, publicHost: PUBLIC_HOST })
+  const target = pairTargetNow()
   const uri =
     target.reachable && target.host
       ? buildPairUri({
@@ -1502,8 +1517,9 @@ server.listen(PORT, HOST, () => {
     console.log('[sync] 额外放行来源：%s', [...EXTRA_ORIGINS].join(', '))
   }
   // 扫码配对：把「手机该连哪里」说清楚。默认部署只监听回环，所以这里多半是一句能照做的命令
-  // 而不是一个地址 —— 与响应里 pair.reachable 的取值同源（pair-uri.mjs 的 resolvePairTarget）。
-  const pairTarget = resolvePairTarget({ listenHost: HOST, port: PORT, publicHost: PUBLIC_HOST })
+  // 而不是一个地址 —— 与响应里 pair.reachable 同源：都走 pairTargetNow()
+  // （resolvePairTarget 选地址 + requirePairTls 判有没有证书）。
+  const pairTarget = pairTargetNow()
   if (pairTarget.reachable) {
     console.log('[sync] 扫码配对：手机连 %s（二维码在页面「扫码配对」卡片里，含配对码与证书指纹）', pairTarget.host)
     if (pairTarget.candidates.length > 1) {
@@ -1512,6 +1528,10 @@ server.listen(PORT, HOST, () => {
   } else if (pairTarget.reason === 'loopback') {
     console.log('[sync] 扫码配对不可用：只监听 %s，手机连上去等于连自己', HOST)
     console.log('[sync]   要手机直连：node sync-server/server.mjs --host 0.0.0.0 --token <口令>')
+  } else if (pairTarget.reason === 'no-tls') {
+    console.log('[sync] 扫码配对不可用：监听了 %s 但没有 TLS 证书 —— 码里就没有证书指纹', HOST)
+    console.log('[sync]   手机端对非回环的明文地址是硬拒绝，画出来必然用不了')
+    console.log('[sync]   先生成证书：node sync-server/gen-cert.mjs，再用 HTTPS 重启（tls/cert.pem 就位后 start.ps1 自动使用）')
   } else {
     console.log('[sync] 扫码配对不可用：没找到能拿给手机用的局域网地址')
     console.log('[sync]   用 --public-host <host:port> 显式指定（反代 / 端口映射 / 域名场景）')

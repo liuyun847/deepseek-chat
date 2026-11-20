@@ -277,6 +277,8 @@ export const zh = {
     '二维码需要手机能直接连到这台电脑，而现在服务只监听本机（127.0.0.1），手机连不上。要手机直连，用局域网模式重启：node sync-server/server.mjs --host 0.0.0.0 --token <口令>（局域网一定要配口令）。',
   syncPairNoAddress:
     '没找到能拿给手机用的局域网地址（本机只有虚拟网卡或未联网）。用 --public-host <host:port> 显式指定这台电脑的地址后重启服务。',
+  syncPairNoTls:
+    '服务端现在没有 TLS 证书，这张码用不了：手机只接受带证书指纹的地址（明文非回环会被直接拒绝）。先在服务端生成证书再配对 —— 运行 node sync-server/gen-cert.mjs，然后用 HTTPS 重启服务（tls/cert.pem 就位后 start.ps1 会自动使用）。',
   syncPairFingerprintNote: '扫这张码会把证书指纹一起带进手机，不用再手抄。',
   syncGroupChangeHost: '更换主机',
   syncGroupChangeHostHint: '只有标记为可当主机的设备才会出现在这里。',
@@ -394,6 +396,7 @@ export const zh = {
     '这个地址是明文 HTTP 且不是本机回环：手机只接受 HTTPS，且配对串里要带证书指纹',
   syncPairFailCode: '配对码不合法：应为 8 位，不含 0 / O / 1 / I',
   syncPairFailFingerprint: '证书指纹不合法：去掉冒号后应为 64 位十六进制',
+  syncPairFailExpiry: '配对串里的过期时间不合法（x 应是 Unix 秒数，例如 1766000000）',
   syncPairExpiredConfirm: '这张码已经过期（生成后超过 10 分钟）：请让电脑上点「重新生成」换一张',
   syncPairNoFingerprint: '串里没有指纹（明文 HTTP 服务）',
   syncPairNoFingerprintPlain: '串里没有指纹：本机固定不了证书，连 HTTPS 会被拒绝',

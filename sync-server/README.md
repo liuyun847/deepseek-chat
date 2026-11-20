@@ -238,15 +238,21 @@ node sync-server/server.mjs --host 0.0.0.0 --token <口令> --tls-cert sync-serv
 | --- | --- |
 | `uri` | 自描述串：`v` 协议版本（当前 `1`）、`h` 服务地址 `host[:port]`（省端口即 7788）、`c` 8 位配对码、`f` 证书 SHA-256（64 位小写十六进制，仅 HTTPS）、`x` 过期时间（Unix 秒） |
 | `host` | `uri` 里用的地址；不可达时为 `null` |
-| `reachable` | `false` 表示**这张码手机用不了**（页面据此改画「怎么开局域网模式」的说明，不画码） |
-| `reason` | `loopback`（只监听回环）/ `no-address`（没找到可用网卡）/ `null` |
+| `reachable` | `false` 表示**这张码手机用不了**（页面据此改画一条能照做的说明，不画码） |
+| `reason` | `loopback`（只监听回环）/ `no-address`（没找到可用网卡）/ `no-tls`（地址有了但服务没有 TLS 证书）/ `null` |
 | `candidates` | 本机其它可用地址，第一项就是 `uri` 里那个 |
 
 **串为什么由服务端拼**：网页永远在回环上（页面由 `local-server` 托管，只绑 127.0.0.1），
 `location.origin` 恒为 `127.0.0.1:7789` —— 手机照着连等于连自己。只有服务端知道自己监听在哪、
 这台机器有哪些网卡，所以页面只负责把 `uri` 画成矩阵。
 
-地址的挑法（实现在 `sync-server/pair-uri.mjs`，有单测式自检）：
+**没有证书就一律不给码**（`reason=no-tls`）：手机端对非回环的明文地址是硬拒绝
+（`src/services/sync/pairing.ts` 的 `plaintext` 分支），安卓壳也不允许 TOFU 自签证书 ——
+所以 `--host 0.0.0.0 --token` 但不带证书时，串里根本没有 `f` 字段，画出来必然被扫后即拒。
+这种部署要先把证书补上：`node sync-server/gen-cert.mjs`，再用 HTTPS 重启服务。
+地址侧的毛病（`loopback` / `no-address`）优先于这条：默认部署两样都缺，最该说的是「开局域网模式」。
+
+地址的挑法（实现在 `sync-server/pair-uri.mjs`，自检见 `tools/pair-qr-sim.mjs` 的 L4）：
 显式给了 `--public-host` 就用它（并认为可达，反代场景正是这样）；否则监听在回环 → `reachable=false`；
 监听在 `0.0.0.0` → 枚举网卡并**丢掉** `internal`、`169.254.*`（APIPA）与虚拟网卡
 （VirtualBox `0a:00:27`/`08:00:27`、VMware `00:50:56`/`00:0c:29`/`00:05:69`、Hyper-V `00:15:5d`），

@@ -65,6 +65,8 @@ export const PairScan = ({
         return t('syncPairFailCode')
       case 'fingerprint':
         return t('syncPairFailFingerprint')
+      case 'expiry':
+        return t('syncPairFailExpiry')
       default:
         return t('syncPairFailScheme')
     }
