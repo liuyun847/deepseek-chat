@@ -317,7 +317,7 @@ const touchSettingsUpdatedAt = (): void => {
  * 本机可同步的那份设置（整份一条记录的内容）。
  *
  * 从当前状态取值后过一遍 sanitizeSyncedSettings：它按白名单逐字段重建，
- * apiKey、syncDeviceId、syncDeviceName 与 LAN 相关键因此不可能混进同步记录
+ * apiKey、syncDeviceId 与 syncDeviceName 因此不可能混进同步记录
  * （不是「记得删」，而是「装不进」）。
  *
  * @returns 可同步设置；理论上不会是 null（状态字段本身合法），null 时本次不产出设置记录
@@ -348,9 +348,8 @@ const canonicalSettings = (): string => {
  * 把远端赢的设置整份落到本机。
  *
  * 只写白名单里的十个键（语言、主题、字号、位置、模型、推理强度、深度思考、智能搜索、
- * 侧边栏、同步服务地址）：apiKey、syncDeviceId、syncDeviceName 与 LAN 相关键
- * （lan-enabled / lan-key / lan-pair-tag / lan-peers）不在这份数据里，也没有对应的写操作，
- * 远端值永远盖不到它们 —— 设备名是本机身份，尤其不能被对端改名。
+ * 侧边栏、同步服务地址）：apiKey、syncDeviceId、syncDeviceName 不在这份数据里，
+ * 也没有对应的写操作，远端值永远盖不到它们 —— 设备名是本机身份，尤其不能被对端改名。
  * 落地时间写成远端那条记录的时间（不是 now）：本机这份内容确实「最后改于」那个时刻，
  * 下次同步才不会把它当成新改动再推回去。
  *

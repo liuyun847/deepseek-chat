@@ -67,9 +67,9 @@ export type SyncedLocation = { region: string; province?: string; city?: string 
  *  - syncDeviceName：设备名是本机身份（界面上用来区分「这是哪台设备」），
  *    不应被跨端覆盖 —— 否则一次同步就会把本机名字改成对端的名字，之后再也看不出是哪台。
  *    它只由本机的 setSyncDeviceName 修改。
- *  - LAN 相关键（chat-demo:lan-enabled / lan-key / lan-pair-tag / lan-peers）：
- *    手机直连的口令链路与多端同步是两条独立通道，密钥跟着设备走，混进整份设置会让
- *    一台设备的口令覆盖另一台。
+ *  - 旧版「手机直连」（已移除的 P2P 通道）的 4 个 chat-demo:lan-* 键：它们本来就不在
+ *    SyncedSettings 里，现在连读写方都没有了（升级设备上残留的键由
+ *    services/sync/legacyLanStorage.ts 在启动时清掉）。
  *
  * syncServerUrl 留在同步范围内：它同样偏本机（各端可能连不同的服务），
  * 但它是用户明确要求跟随同步的设置项，因此整份 LWW 之后两端会被较新的一侧统一，属于预期。
@@ -293,7 +293,7 @@ const stampOf = (value: unknown): number =>
  * 校验并「白名单化」一份可同步设置。
  *
  * 逐字段重建而不是删键：只剩下面这十个字段，任何多余键（apiKey、syncDeviceId、
- * syncDeviceName、lan-* 等）都在这里消失，服务端落盘的记录因此不可能带上它们。
+ * syncDeviceName 等）都在这里消失，服务端落盘的记录因此不可能带上它们。
  *
  * @param value 未知结构
  * @returns 规范化后的设置；字段缺失或类型不对返回 null（调用方按非法记录处理）
