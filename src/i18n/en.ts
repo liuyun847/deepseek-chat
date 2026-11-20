@@ -373,4 +373,49 @@ export const en = {
   lanErrorReplay: 'Duplicate request received and ignored',
   lanErrorShort: 'Passphrase too short, at least 8 characters',
   lanErrorUnknown: 'Phone-to-phone failed: {message}',
+  syncScanTitle: 'Pair by QR code',
+  syncScanDescription:
+    'Scan the QR code on the computer, or paste what "Copy pairing string" gives you. The code carries the server address, a one-time pairing code and the certificate fingerprint.',
+  syncScanButton: 'Scan QR code',
+  syncScanScanning: 'Waiting for the scan…',
+  syncScanPastePlaceholder: 'Paste the pairing string (deepseek-sync://…)',
+  syncScanParse: 'Parse',
+  syncScanPasteEmpty: 'Paste a pairing string first',
+  syncScanParsed: 'Parsed. Check the fields below, then tap "Pair and join"',
+  syncScanUnavailable:
+    'No scanner in this environment (the browser has no camera bridge): scan from the Android app, or paste the pairing string',
+  syncScanUnavailableHint:
+    'The web build can only paste a pairing string; scanning needs the phone app.',
+  syncScanCancelled: 'Scan cancelled',
+  syncScanPermission:
+    'No camera permission: allow "Camera" for this app in system settings, or use "Pick an image" in the scanner',
+  syncScanNoCamera:
+    'No usable camera on this device: tap "Pick an image" in the scanner, or paste the pairing string',
+  syncScanTimeout:
+    'No QR code found: move the code into the frame, raise the screen brightness, or pick an image',
+  syncScanFailed: 'Scan failed: {message}',
+  syncScanConfirmTitle: 'Got it — confirm to pair',
+  syncScanConfirmHost: 'Server',
+  syncScanConfirmCode: 'Pairing code',
+  syncScanConfirmFingerprint: 'Certificate fingerprint',
+  syncScanConfirmExpires: 'Valid until',
+  syncScanConfirmPair: 'Pair and join',
+  syncScanApplying: 'Joining…',
+  syncScanConnecting: 'Connecting to {host}…',
+  syncScanPaired: 'Paired: {host}',
+  syncPairFailLength: 'Pairing string too long (over 512 characters): check nothing else got pasted',
+  syncPairFailScheme: 'Not a pairing string of this app: it must start with deepseek-sync://pair',
+  syncPairFailVersion: 'Unknown pairing string version (v is not 1): update the sync server',
+  syncPairFailHost: 'Bad server address in the pairing string (expected host or IP plus port)',
+  syncPairFailPlaintext:
+    'That address is plaintext HTTP and not loopback: phones only accept HTTPS, with the certificate fingerprint in the string',
+  syncPairFailCode: 'Bad pairing code: 8 characters, no 0 / O / 1 / I',
+  syncPairFailFingerprint:
+    'Bad certificate fingerprint: 64 hex digits once the colons are removed',
+  syncPairExpiredConfirm:
+    'That code has expired (older than 10 minutes): ask the computer to "Regenerate" one',
+  syncPairNoFingerprint: 'No fingerprint in the string (plaintext HTTP server)',
+  syncPairNoFingerprintPlain:
+    'No fingerprint in the string: this device cannot pin the certificate, HTTPS would be refused',
+  syncPairMatrixFailed: 'Cannot draw a QR code for this content: {message}',
 } satisfies Record<keyof typeof zh, string>

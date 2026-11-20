@@ -11,4 +11,18 @@
         <item name="android:colorBackground">@color/app_bg</item>
         <item name="android:windowLightStatusBar">true</item>
     </style>
+
+    <!--
+      扫码界面（ScanActivity）的主题：全屏、纯黑底、深色文字控件。
+      与 AppTheme 分开而不是复用：相机预览要满屏、不要浅色窗口底色（否则预览起来前会闪一下白），
+      而且取景框与提示都是白字，必须配深色控件主题才看得清。
+    -->
+    <style name="ScanTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowFullscreen">true</item>
+    </style>
 </resources>

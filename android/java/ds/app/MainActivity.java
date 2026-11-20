@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.net.Uri;
 import android.net.http.SslError;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -113,6 +114,9 @@ public class MainActivity extends Activity {
     /** 网页里 <input type=file> 选文件的请求码。回调形态与导出完全不同，必须分开。 */
     private static final int REQ_PICK_FILE = 1003;
 
+    /** 页面点「扫描二维码」调起 ScanActivity 的请求码。结果用 evaluateJavascript 回传。 */
+    private static final int REQ_SCAN_QR = 1004;
+
     /** 单次导出的体积上限：base64 跨 JNI 传字符串，太大容易在低端机上 OOM。 */
     private static final int MAX_SAVE_BYTES = 48 * 1024 * 1024;
 
@@ -131,6 +135,89 @@ public class MainActivity extends Activity {
      * 由配对流程通过 __DS_BRIDGE__.setSyncTlsPin 写入；空串表示没有固定，HTTPS 一律拒绝。
      */
     private String syncTlsPin = "";
+
+    /**
+     * 取 SslError 里那张证书的 DER 编码。
+     *
+     * 为什么要写这么绕：`SslCertificate.getX509Certificate()` 是 **API 29** 才加的，
+     * 而本应用 minSdk 26。在 Android 9（API 28，本机雷电实测）上直接调用会抛
+     * `NoSuchMethodError: No virtual method getX509Certificate()` —— 注意它不是 Exception，
+     * catch (Exception) 根本接不住，进程当场崩（实测：点「配对并加入」→ App 直接消失）。
+     *
+     * 所以：
+     *   - API 29+：走 getX509Certificate()，拿不到就落到下面的通用路径；
+     *   - API 26–28：只能走 SslCertificate.saveState()，Bundle 里的 "x509" 就是 DER 字节
+     *     （这个键从 API 1 起就在，AOSP 里是 SslCertificate.X509_CERTIFICATE = "x509"）。
+     * 两条路最后都交给 CertificateFactory 解析成 X509Certificate，指纹算法完全一致。
+     *
+     * @param certificate WebView 交来的证书（SslCertificate）
+     * @return DER 字节；两条路都拿不到时返回 null（调用方按「不匹配」处理，绝不 proceed）
+     */
+    private byte[] certificateBytes(android.net.http.SslCertificate certificate) {
+        if (certificate == null) {
+            return null;
+        }
+        // ① API 29+ 的公开方法
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                X509Certificate x509 = certificate.getX509Certificate();
+                if (x509 != null) {
+                    return x509.getEncoded();
+                }
+            } catch (Exception e) {
+                bridgeLog("getX509Certificate 失败：" + e);
+            }
+        }
+        // ② 反射私有字段：API 26–28 上这是唯一能拿到原始 DER 的稳定办法
+        //    （mCertificate 是 byte[]；mX509Certificate 是 API 29+ 的字段，两个都试）
+        Object field = readPrivateField(certificate, "mX509Certificate");
+        if (field instanceof X509Certificate) {
+            try {
+                return ((X509Certificate) field).getEncoded();
+            } catch (Exception e) {
+                bridgeLog("mX509Certificate.getEncoded 失败：" + e);
+            }
+        }
+        field = readPrivateField(certificate, "mCertificate");
+        if (field instanceof byte[]) {
+            return (byte[]) field;
+        }
+        // ③ saveState 的 Bundle（跨版本约定是 "x509" 键放 DER）
+        try {
+            android.os.Bundle state = android.net.http.SslCertificate.saveState(certificate);
+            if (state != null) {
+                bridgeLog("saveState 键：" + state.keySet());
+                byte[] der = state.getByteArray("x509");
+                if (der != null) {
+                    return der;
+                }
+            }
+        } catch (Exception e) {
+            bridgeLog("saveState 失败：" + e);
+        }
+        return null;
+    }
+
+    /**
+     * 读一个私有字段（拿不到就返回 null，不抛异常）。
+     *
+     * 为什么要碰私有字段：Android 9 及以下没有公开 API 能从 SslCertificate 里取出证书 DER，
+     * 而这串指纹是「自签证书固定」唯一的判据。只读、只在这条错误回调里调用一次，失败就按
+     * 「不匹配」处理（绝不 proceed）—— 所以拿不到不构成安全问题，只是那条路连不上。
+     *
+     * @param target 目标对象
+     * @param name   字段名
+     * @return 字段值；字段不存在/被隐藏 API 策略挡住/无权访问时返回 null
+     */
+    private Object readPrivateField(Object target, String name) {
+        try {
+            java.lang.reflect.Field f = target.getClass().getDeclaredField(name);
+            f.setAccessible(true);
+            return f.get(target);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
 
     /** 待落盘的内容（用户还在系统文件选择器里挑位置时暂存）。 */
     private volatile byte[] pendingBytes = null;
@@ -204,15 +291,19 @@ public class MainActivity extends Activity {
             public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
                 if (!syncTlsPin.isEmpty()) {
                     try {
-                        X509Certificate cert = error.getCertificate().getX509Certificate();
-                        byte[] digest = MessageDigest.getInstance("SHA-256").digest(cert.getEncoded());
-                        StringBuilder hex = new StringBuilder(digest.length * 2);
-                        for (byte b : digest) {
-                            hex.append(String.format("%02x", b));
-                        }
-                        if (syncTlsPin.equals(hex.toString())) {
-                            handler.proceed();
-                            return;
+                        byte[] encoded = certificateBytes(error.getCertificate());
+                        if (encoded != null) {
+                            byte[] digest = MessageDigest.getInstance("SHA-256").digest(encoded);
+                            StringBuilder hex = new StringBuilder(digest.length * 2);
+                            for (byte b : digest) {
+                                hex.append(String.format("%02x", b));
+                            }
+                            if (syncTlsPin.equals(hex.toString())) {
+                                handler.proceed();
+                                return;
+                            }
+                        } else {
+                            bridgeLog("取不到证书内容，按不匹配处理");
                         }
                     } catch (Exception e) {
                         bridgeLog("校验同步证书失败：" + e);
@@ -634,6 +725,35 @@ public class MainActivity extends Activity {
             return syncTlsPin;
         }
 
+        /**
+         * 调起扫码界面（ScanActivity）。结果异步回到 window.__dsScan.onResult(json)：
+         * 成功 {"ok":true,"raw":"…"}，失败 {"ok":false,"reason":"cancelled|permission|nocamera|timeout|error"}。
+         *
+         * **只回原始串，不在这里解析**：解析器只有一份（src/services/sync/pairing.ts），
+         * 原生自己解析会立刻多出一份 scheme / 字母表 / 字段规则。见 shell.js 的 window.__dsScan。
+         *
+         * 必须切到 UI 线程：本方法在 WebView 的 JS 线程上被调用，而 startActivityForResult
+         * 只能在拥有视图的线程上调（否则在部分 ROM 上直接抛）。
+         */
+        @JavascriptInterface
+        public void startScan() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        startActivityForResult(new Intent(MainActivity.this, ScanActivity.class),
+                                REQ_SCAN_QR);
+                    } catch (Exception e) {
+                        bridgeLog("调起扫码界面失败：" + e);
+                        evalJs("window.__dsScan&&window.__dsScan.onResult("
+                                + JSONObject.quote("{\"ok\":false,\"reason\":\"error\",\"detail\":"
+                                        + JSONObject.quote(String.valueOf(e.getMessage())) + "}")
+                                + ")");
+                    }
+                }
+            });
+        }
+
         @JavascriptInterface
         public void toast(final String msg) {
             runOnUiThread(new Runnable() {
@@ -828,6 +948,30 @@ public class MainActivity extends Activity {
             if (!multiple && out.length > 1) out = new Uri[]{out[0]};   // 单选只交第一个
             bridgeLog("文件选择返回 " + out.length + " 项");
             cb.onReceiveValue(out);
+            return;
+        }
+
+        if (requestCode == REQ_SCAN_QR) {
+            // 扫码结果：只把原始串（或失败原因）回给页面，语义判断全在页面侧
+            String json;
+            String raw = (resultCode == RESULT_OK && data != null)
+                    ? data.getStringExtra(ScanActivity.EXTRA_RAW) : null;
+            if (raw != null && !raw.isEmpty()) {
+                json = "{\"ok\":true,\"raw\":" + JSONObject.quote(raw) + "}";
+            } else {
+                String reason = (data == null) ? null : data.getStringExtra(ScanActivity.EXTRA_REASON);
+                String detail = (data == null) ? null : data.getStringExtra(ScanActivity.EXTRA_DETAIL);
+                if (reason == null) reason = ScanActivity.REASON_CANCELLED;
+                StringBuilder sb = new StringBuilder();
+                sb.append("{\"ok\":false,\"reason\":").append(JSONObject.quote(reason));
+                if (detail != null && !detail.isEmpty()) {
+                    sb.append(",\"detail\":").append(JSONObject.quote(detail));
+                }
+                sb.append('}');
+                json = sb.toString();
+            }
+            bridgeLog("扫码结果回传：" + (raw != null ? "ok" : json));
+            evalJs("window.__dsScan&&window.__dsScan.onResult(" + JSONObject.quote(json) + ")");
             return;
         }
 

@@ -1,0 +1,44 @@
+[
+  {
+    "file": "pair-https.png",
+    "note": "HTTPS + 证书指纹 + 未过期（真实部署的形状）",
+    "uri": "deepseek-sync://pair?v=1&h=192.168.124.10:7788&c=ABCD2345&f=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&x=4102444800",
+    "expect": {
+      "ok": true,
+      "host": "192.168.124.10:7788",
+      "code": "ABCD2345",
+      "expired": false
+    }
+  },
+  {
+    "file": "pair-http-loopback.png",
+    "note": "明文 HTTP + 回环 + 无指纹（本机自用）",
+    "uri": "deepseek-sync://pair?v=1&h=127.0.0.1:7788&c=HJKMNPQR",
+    "expect": {
+      "ok": true,
+      "host": "127.0.0.1:7788",
+      "code": "HJKMNPQR",
+      "expired": false
+    }
+  },
+  {
+    "file": "pair-expired.png",
+    "note": "x 已过期（2020-09 的时间戳，早就过了）—— 解析仍 ok，但 expired=true",
+    "uri": "deepseek-sync://pair?v=1&h=192.168.124.10:7788&c=23456789&f=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&x=1600000000",
+    "expect": {
+      "ok": true,
+      "host": "192.168.124.10:7788",
+      "code": "23456789",
+      "expired": true
+    }
+  },
+  {
+    "file": "not-a-pair.png",
+    "note": "反例：一张正常但不是配对串的二维码（解析应为 scheme 失败）",
+    "uri": "https://example.com/hello?v=1&h=192.168.124.10:7788",
+    "expect": {
+      "ok": false,
+      "reason": "scheme"
+    }
+  }
+]

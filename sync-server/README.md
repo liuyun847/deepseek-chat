@@ -89,6 +89,7 @@ Windows 上建议用脚本（幂等；只有 `GET /api/health` 报出 `format=ch
 
 ```powershell
 .\sync-server\start.ps1        # 隐藏窗口启动，默认 127.0.0.1:7788；-Port / SYNC_PORT 改端口
+.\sync-server\start.ps1 -Lan   # 对局域网开放（= --host 0.0.0.0 + 必需口令），默认关闭
 .\sync-server\stop.ps1         # 按端口停止，幂等
 ```
 
@@ -112,8 +113,39 @@ node sync-server\gen-cert.mjs      # 生成证书并打印 64 位指纹（手机
 local-server 后起时会看到证书并自动用 https 上游；local-server 先跑 → 7788 探测到 7789 在监听，
 跳过生成、保持 HTTP，两边仍然配对。
 
-> 自签 HTTPS 下的 `/api/health` 探测走 `curl -k`（Windows 10 1803+ 自带）：PowerShell 5.1/7 的
-> 脚本块做不了证书回调（回调跑在 TLS 线程上、没有 Runspace，设了也照样握手失败）。
+> 顺带一句：自签 HTTPS 下的 `/api/health` 探测走 `curl -k`（Windows 10 1803+ 自带），
+> 因为 PowerShell 5.1/7 的脚本块没法做证书回调（回调跑在 TLS 线程上、没有 Runspace，设了也照样握手失败）。
+
+### 对局域网开放：`-Lan`（默认关闭）
+
+「自启只监听回环」这条不变：开机自启的 vbs 不带 `-Lan`。
+手机要直连这个 HTTPS 端口（见「二维码配对串」一节）时才显式开放：
+
+| 参数 | 作用 |
+| --- | --- |
+| `-Lan` | 等价 `--host 0.0.0.0`。**口令三处必有一处**，否则脚本拒绝启动（退出码 1）：`-Token <口令>` > `SYNC_TOKEN` 环境变量 > `<仓库>\.secrets\sync-token.txt` 首行 |
+| `-Token <口令>` | 本次用的口令；只在 `-Lan` 时生效（不给 `-Lan` 会打一行提示，仍只监听回环） |
+| `-PublicHost <host:port>` | 透传给 `--public-host`：二维码里就用这个地址（反代 / 端口映射 / 域名场景） |
+
+口令**不进命令行**：`start.ps1` 把它放进子进程的 `SYNC_TOKEN` 环境变量，
+所以进程列表与 `start.log` 里都看不到它；日志只说「口令已启用」。
+开放成功时日志里会明确出现这一行（看不到就说明仍是回环模式）：
+
+```text
+[sync] 已对局域网开放：0.0.0.0:7788，口令已启用（未打印）
+```
+
+服务端自身也会再打一行 `[sync] 已对局域网开放：监听 0.0.0.0（口令已启用…）`。
+第一次开放前先准备一份口令（生成即用，不打印到历史记录里）：
+
+```powershell
+New-Item -ItemType Directory -Force .secrets | Out-Null
+[System.IO.File]::WriteAllText("$PWD\.secrets\sync-token.txt", [guid]::NewGuid().ToString('N'))
+.\sync-server\start.ps1 -Lan
+```
+
+已有一实例在跑时脚本**不会替你重启**（它只做幂等检查）：要切到局域网模式得先
+`stop.ps1` 再 `start.ps1 -Lan`，脚本会打一行提示说明这一点。
 
 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 调一次 `start.ps1`，
 日志在 `sync-server\logs\start.log`（启停结果）与 `logs\autostart.err.log`（那次隐藏运行的 stderr）。

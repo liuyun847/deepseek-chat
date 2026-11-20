@@ -24,6 +24,7 @@ import {
   type InviteInfo,
   type PairInfo,
 } from '../../services/sync/api.js'
+import type { ParsedPair } from '../../services/sync/pairing.js'
 import {
   isCertFingerprint,
   readSyncTlsPin,
@@ -43,6 +44,7 @@ import type { LastSyncInfo } from '../../services/sync/snapshots.js'
 import { Button } from '../base/Button.js'
 import { Modal } from '../base/Modal.js'
 import { PairQr } from './PairQr.js'
+import { PairScan } from './PairScan.js'
 import { Select } from '../base/Select.js'
 import styles from './Settings.module.css'
 import syncStyles from './SyncSettings.module.css'
@@ -447,6 +449,47 @@ export const SyncSettings = () => {
     })
   }
 
+  /**
+   * 扫码/粘贴串确认后的入组：回填地址与配对码 → 固定指纹 → joinGroup → 保存组。
+   *
+   * **顺序是硬要求**：先 writeSyncTlsPin 再 joinGroup。WebView 在 TLS 握手阶段就拒自签证书
+   * （MainActivity.onReceivedSslError 没有 pin 就 cancel），不是应用层 401 —— 反过来的表现是
+   * 「第一下必然失败、第二下就好了」，这种偶发最难查（设计 6.2）。
+   *
+   * @param parsed 已解析的配对串字段（解析在这一侧做，原生只回原始串）
+   * @throws SyncError 等异常原样抛给 PairScan 显示（不吞）
+   */
+  const onPair = async (parsed: ParsedPair) => {
+    // ① 先写证书指纹：WebView 在 TLS 握手阶段就拒自签证书，写晚了第一下必然失败（见设计 6.2）
+    if (parsed.fingerprint && pinSupported && !writeSyncTlsPin(parsed.fingerprint)) {
+      throw new Error(t('syncTlsPinInvalid'))
+    }
+    setSyncDeviceName(deviceName)
+    setJoinCode(parsed.code)
+    if (parsed.fingerprint) {
+      setServerFingerprint(parsed.fingerprint)
+      setPinnedFingerprint(readSyncTlsPin())
+    }
+    // ② 再入组（用串里给的地址，不依赖「服务地址」输入框——那个框此刻还没回填）
+    const result = await joinGroup(parsed.serverUrl, {
+      code: parsed.code,
+      device: syncDeviceId,
+      name: deviceName,
+      canHost: true,
+    })
+    saveSyncGroup(result.group, result.deviceToken)
+    setGroup(result.group)
+    // ③ 成功后才回填服务地址：setServer 会立刻触发「按地址拉组信息」那个 effect，
+    //    在加入成功之前回填的话，界面会先切到「已加入」的组面板，把正在配对的卡片撤掉 ——
+    //    实测就卡在「点了配对没反应」（卡被卸载、按钮消失、请求还在路上）
+    setSyncServerUrl(parsed.serverUrl)
+    setServer(parsed.serverUrl)
+    setInvite(null)
+    setPair(null)
+    setJoinCode('')
+    setGroupStatus({ text: t('syncGroupJoined') })
+  }
+
   const onTest = async () => {
     commit()
     setTestStatus(null)
@@ -775,6 +818,14 @@ export const SyncSettings = () => {
             </div>
           ) : (
             <div className={syncStyles.groupPanel}>
+              {/* 扫码/粘贴配对串就放在建组与手填码这一行上面：它是「被邀请的那一端」的入口，
+                  与右边电脑侧的二维码卡片正好是同一件事的两面 */}
+              <PairScan
+                pinSupported={pinSupported}
+                describe={describe}
+                busy={groupBusy}
+                onPair={onPair}
+              />
               <div className={syncStyles.field}>
                 <Button
                   size="m"

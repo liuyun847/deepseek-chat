@@ -10,7 +10,7 @@
  * 构建时由 tools/build-apk.ps1 从 android/shell/ 拷进 APK 的 assets/shell.js ——
  * 它不参与前端构建，dist/index.html 里也没有它（网页形态下没有这个文件，只有壳里才有）。
  *
- * 五件事，前四件都是 WebView 缺浏览器那一层能力、页面里补不了：
+ * 六件事，前五件都是 WebView 缺浏览器那一层能力、页面里补不了：
  *
  *   1. 返回键：前端是单页应用、没有 history 路由，系统返回键无从判断"该关哪个界面"。
  *      这里给原生一个 window.__dsBack()，从离用户最近的一层往外回退，返回 true 表示这次
@@ -45,7 +45,12 @@
  *      塞进那个字段，得走桥：window.__dsSync.setTlsPin(指纹) → __DS_BRIDGE__.setSyncTlsPin
  *      → 写 SharedPreferences（进程重启后仍然有效）。见下面「自签证书指纹」一节。
  *
- *   5. 导出下载：设置里「导出全部对话」是 {URL.createObjectURL → <a download> → click()}。
+ *   5. 扫码配对：页面点「扫描二维码」时调起原生 ScanActivity，把扫到的**原始串**回给页面
+ *      （window.__dsScan.start() → __DS_BRIDGE__.startScan() → 原生 → onResult(json)）。
+ *      原生只负责「把像素变成字符串」，解析与校验全在页面侧的唯一解析器里
+ *      （src/services/sync/pairing.ts）。见下面「扫码配对」一节。
+ *
+ *   6. 导出下载：设置里「导出全部对话」是 {URL.createObjectURL → <a download> → click()}。
  *      这个流程在浏览器里由下载管理器接管，WebView 没有下载管理器，点了什么都不会发生
  *      （DownloadListener 也拿不到 blob: 的内容 —— 它只活在渲染进程里）。
  *      所以这里在捕获阶段拦下带 download 属性的 blob: 链接，自己 fetch 出内容，
@@ -250,6 +255,83 @@
       } catch (e) {
         return false
       }
+    },
+  }
+
+  // ── 扫码配对（手机这一端）─────────────────────────────────────────────────
+  //
+  // 原生侧（MainActivity.Bridge.startScan → ScanActivity）只做「把像素变成字符串」：
+  // 成功了回传 {"ok":true,"raw":"deepseek-sync://…"}，失败回 {"ok":false,"reason":"…"}。
+  // 这里只把它变成「一次调用 → 一个 Promise」，语义（解析、校验、过期判断）全在页面侧。
+  //
+  // 与 __dsLan 的 id→Promise 不同，扫码天然是单通道、串行的一次交互，所以只留一个挂起槽：
+  // 同时点两次「扫描」时第二次直接返回 scan-busy，不去抢原生的 startActivityForResult
+  // （抢了会让第一次的 Promise 永远悬着）。
+
+  var scanBridge = window.__DS_BRIDGE__
+  var scanBridgeAvailable = !!(scanBridge && typeof scanBridge.startScan === 'function')
+  var scanPending = null
+  var scanTimer = 0
+  /** 扫码界面开着的最长等待（毫秒）：用户可能在那界面里翻图，给足 3 分钟 */
+  var SCAN_TIMEOUT_MS = 180000
+
+  window.__dsScan = {
+    available: scanBridgeAvailable,
+
+    /**
+     * 调起扫码界面。
+     * @returns {Promise<{ok:boolean, raw?:string, reason?:string, detail?:string}>} 永不 reject：
+     *          超时也折成 {ok:false, reason:'timeout'}，调用方只看 reason
+     */
+    start: function () {
+      if (!scanBridgeAvailable) {
+        return Promise.resolve({ ok: false, reason: 'unavailable' })
+      }
+      if (scanPending) {
+        return Promise.resolve({ ok: false, reason: 'error', detail: 'scan-busy' })
+      }
+      return new Promise(function (resolve) {
+        scanPending = resolve
+        scanTimer = window.setTimeout(function () {
+          var slot = scanPending
+          scanPending = null
+          scanTimer = 0
+          if (slot) slot({ ok: false, reason: 'timeout' })
+        }, SCAN_TIMEOUT_MS)
+        try {
+          scanBridge.startScan()
+        } catch (e) {
+          window.clearTimeout(scanTimer)
+          scanTimer = 0
+          scanPending = null
+          resolve({ ok: false, reason: 'error', detail: String(e) })
+        }
+      })
+    },
+
+    /**
+     * 原生回传入口，由 MainActivity.onActivityResult 用 evaluateJavascript 调用。
+     * @param {string|Object} payload JSON 字符串（或已解析的对象）
+     * @returns {boolean} true = 这次结果被某次 start() 收下了；false = 没有等待中的调用（丢弃）
+     */
+    onResult: function (payload) {
+      var slot = scanPending
+      scanPending = null
+      if (scanTimer) {
+        window.clearTimeout(scanTimer)
+        scanTimer = 0
+      }
+      if (!slot) return false
+      var value = payload
+      if (typeof payload === 'string') {
+        try {
+          value = JSON.parse(payload)
+        } catch (e) {
+          value = null
+        }
+      }
+      slot(value && typeof value === 'object' ? value : { ok: false, reason: 'error' })
+      return true
     },
   }
 
