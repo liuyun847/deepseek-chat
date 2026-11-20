@@ -5,7 +5,8 @@
 
 ## HTTPS 与证书指纹（自签证书怎么配对）
 
-首次运行先生成一张自签证书（需要 PATH 里有 `openssl`）：
+首次运行先生成一张自签证书（需要 `openssl`；`start.ps1` 会自动去 Git for Windows 等常见安装位置找，
+不必先在 PATH 里，见下面「HTTPS 与反代的先后顺序」）：
 
 ```powershell
 node sync-server\gen-cert.mjs
@@ -39,7 +40,8 @@ node sync-server\server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-s
 
 ### 手机怎么带入（第一次配对）
 
-1. 电脑上 `node sync-server\gen-cert.mjs`（或 `start.ps1`，它会在缺证书时自动生成），
+1. 电脑上 `node sync-server\gen-cert.mjs`（或 `start.ps1`，它在缺证书时自动生成；
+   但 7789 本机服务已在跑时会跳过，见「HTTPS 与反代的先后顺序」），
    从输出里抄下 64 位指纹；也可以在 `local-server` 托管的页面里
    设置 → 多端同步 →「测试连接」，读回服务端上报的指纹并用同一行的「复制」按钮复制。
 2. 手机 APK → 设置 → 多端同步：
@@ -82,12 +84,36 @@ node tools/tls-pin-sim.mjs --url https://127.0.0.1:7788 --pin 0000...0000  # 期
 ## 启动
 
 Windows 上建议用脚本（幂等；只有 `GET /api/health` 报出 `format=chat-demo-sync` 才返回 0）。
-`start.ps1` 会优先使用 `tls\cert.pem` + `tls\key.pem`，缺失时尝试自动生成：
+`start.ps1` 会优先使用 `tls\cert.pem` + `tls\key.pem`，缺失时尝试自动生成
+（生成机率受下面「HTTPS 与反代的先后顺序」那一节约束）：
 
 ```powershell
 .\sync-server\start.ps1        # 隐藏窗口启动，默认 127.0.0.1:7788；-Port / SYNC_PORT 改端口
 .\sync-server\stop.ps1         # 按端口停止，幂等
 ```
+
+### HTTPS 与反代的先后顺序（为什么 7789 在跑时不自动生成）
+
+本机 Web 服务（`local-server`，默认 7789）是在**它自己启动时**一次性采样 `sync-server\tls\cert.pem`
+来决定上游协议的（有证书 → `https://127.0.0.1:7788` + `SYNC_CA_FILE`，没有 → 明文 http），
+进程起来之后不会跟随。所以「证书中途出现」会让它拿 http 客户端去打一个 TLS 端口，`/sync/api/*` 直接 502。
+
+`start.ps1` 因此多了一条判断：探测到 7789 已在监听、且当前没有证书时，**跳过自动生成**，
+只打印切换步骤（服务照常以 HTTP 起来，浏览器同步不受影响）。要切 HTTPS，按这个顺序：
+
+```powershell
+.\local-server\stop.ps1            # 先停反代，别让它带着 http 上游留在那儿
+node sync-server\gen-cert.mjs      # 生成证书并打印 64 位指纹（手机要 pin 的那串）
+.\sync-server\start.ps1            # 7788 起来就是 HTTPS
+.\local-server\start.ps1           # 7789 这次会自动选 https 上游 + SYNC_CA_FILE
+```
+
+开机自启（两个 vbs 并行拉起）两种先后顺序都能收敛：sync 先跑 → 生成证书、7788 走 HTTPS，
+local-server 后起时会看到证书并自动用 https 上游；local-server 先跑 → 7788 探测到 7789 在监听，
+跳过生成、保持 HTTP，两边仍然配对。
+
+> 自签 HTTPS 下的 `/api/health` 探测走 `curl -k`（Windows 10 1803+ 自带）：PowerShell 5.1/7 的
+> 脚本块做不了证书回调（回调跑在 TLS 线程上、没有 Runspace，设了也照样握手失败）。
 
 开机自启：`%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` 调一次 `start.ps1`，
 日志在 `sync-server\logs\start.log`（启停结果）与 `logs\autostart.err.log`（那次隐藏运行的 stderr）。
