@@ -1,5 +1,6 @@
 /**
- * 配对串自检工具：解析（L1）与编码（L2）两层，全部脱离浏览器跑。
+ * 配对串自检工具：解析（L1）、编码（L2）与服务端选地址（L4）三层，全部脱离浏览器跑。
+ * （L3 是二维码解码自检，另一个脚本：tools/qr-decode-check.ps1。）
  *
  * 为什么要有它
  * ============
@@ -9,6 +10,7 @@
  *
  *   L1 解析：往返、字段校验、大小写、带斜杠、缺字段、IPv6、过期
  *   L2 编码：同一串 → 同一矩阵（矩阵 SHA-256 黄金向量）、模块数（二维码版本）
+ *   L4 选地址：服务端 resolvePairTarget + requirePairTls（含「没证书就别画码」这条闸）
  *
  * 被验证的是 src/services/sync/pairing.ts（页面里用的就是同一份代码），
  * 先用 tsc 把它编成 JS（配置见 tools/pair-sim/tsconfig.json，产物在 build/ 下），
@@ -16,7 +18,7 @@
  *
  * 用法
  *   node tools/pair-qr-sim.mjs                  # 默认跑 --self-test
- *   node tools/pair-qr-sim.mjs --self-test      # L1 + L2 全部断言
+ *   node tools/pair-qr-sim.mjs --self-test      # L1 + L2 + L4 全部断言
  *   node tools/pair-qr-sim.mjs --parse "<串>"   # 打印解析出的字段；非法串退出码 1
  *   node tools/pair-qr-sim.mjs --golden         # 只比对矩阵黄金向量
  *   node tools/pair-qr-sim.mjs --build          # 先重新编译 TS 子集再跑
@@ -347,6 +349,49 @@ const main = async () => {
     svg.slice(0, 160)
   )
   check('L2 SVG 只有一个 path（不是逐模块 rect）', (svg.match(/<path /g) || []).length === 1, 'path 数 ' + (svg.match(/<path /g) || []).length)
+
+  // ── L4：服务端选地址（sync-server/pair-uri.mjs，页面与启动日志读的都是它）──
+  // 直接 import 服务端那份纯函数模块：规则只有一处实现，这里只钉住「说得出为什么」的几条。
+  const { requirePairTls, resolvePairTarget } = await import(
+    new URL('../sync-server/pair-uri.mjs', import.meta.url).href
+  )
+  const pick = (input, hasFingerprint) =>
+    requirePairTls(resolvePairTarget({ port: 7788, ...input }), { hasFingerprint })
+
+  // 这一条是必修项：--host 0.0.0.0 --token 但不带证书时，地址可达却没有指纹，
+  // 旧实现照样画码（uri 无 f），手机端必然拒 —— 现在必须直接判不可达。
+  const lanNoTls = pick({ listenHost: '0.0.0.0', addresses: ['192.168.1.5'] }, false)
+  check(
+    'L4 非回环 + 没证书 → 不给地址（no-tls）',
+    lanNoTls.reachable === false && lanNoTls.host === null && lanNoTls.reason === 'no-tls',
+    JSON.stringify(lanNoTls)
+  )
+  const lanTls = pick({ listenHost: '0.0.0.0', addresses: ['192.168.1.5'] }, true)
+  check(
+    'L4 非回环 + 有证书 → 给地址',
+    lanTls.reachable === true && lanTls.host === '192.168.1.5:7788' && lanTls.reason === null,
+    JSON.stringify(lanTls)
+  )
+  check(
+    'L4 显式 --public-host 也要有证书',
+    pick({ listenHost: '127.0.0.1', publicHost: 'nas.local:7788' }, false).reason === 'no-tls',
+    JSON.stringify(pick({ listenHost: '127.0.0.1', publicHost: 'nas.local:7788' }, false))
+  )
+  check(
+    'L4 显式 --public-host + 有证书 → 用它',
+    pick({ listenHost: '0.0.0.0', publicHost: 'nas.local:7788', addresses: [] }, true).host ===
+      'nas.local:7788'
+  )
+  check(
+    'L4 回环的毛病优先于 no-tls',
+    pick({ listenHost: '127.0.0.1' }, false).reason === 'loopback',
+    pick({ listenHost: '127.0.0.1' }, false).reason
+  )
+  check(
+    'L4 没有网卡地址 → no-address',
+    pick({ listenHost: '0.0.0.0', addresses: [] }, true).reason === 'no-address',
+    pick({ listenHost: '0.0.0.0', addresses: [] }, true).reason
+  )
 
   // ── 汇总 ─────────────────────────────────────────────────────────────────
   const total = passed + failures.length

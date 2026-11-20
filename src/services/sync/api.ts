@@ -371,8 +371,11 @@ export type PairInfo = {
   host: string | null
   /** false = 现在这张码手机用不了（reason 说明为什么） */
   reachable: boolean
-  /** 'loopback' = 只监听本机；'no-address' = 没找到可用的网卡地址 */
-  reason: 'loopback' | 'no-address' | null
+  /**
+   * 'loopback' = 只监听本机；'no-address' = 没找到可用的网卡地址；
+   * 'no-tls' = 地址有了但服务没有 TLS 证书（码里没有指纹，手机端一定拒）
+   */
+  reason: 'loopback' | 'no-address' | 'no-tls' | null
   /** 其它可用地址（host:port），第一项就是 uri 里用的那个 */
   candidates: string[]
 }
@@ -455,7 +458,10 @@ const parsePair = (value: unknown): PairInfo | null => {
   if (typeof pair.reachable !== 'boolean') {
     return null
   }
-  const reason = pair.reason === 'loopback' || pair.reason === 'no-address' ? pair.reason : null
+  const reason =
+    pair.reason === 'loopback' || pair.reason === 'no-address' || pair.reason === 'no-tls'
+      ? pair.reason
+      : null
   return {
     uri: typeof pair.uri === 'string' ? pair.uri : null,
     host: typeof pair.host === 'string' ? pair.host : null,

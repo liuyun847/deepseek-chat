@@ -291,6 +291,8 @@ export const en = {
     'The QR code needs the phone to reach this computer directly, but the service only listens on loopback (127.0.0.1) right now, so the phone cannot connect. To allow it, restart in LAN mode: node sync-server/server.mjs --host 0.0.0.0 --token <passphrase> (a passphrase is mandatory on a LAN).',
   syncPairNoAddress:
     'No LAN address the phone could use was found (only virtual adapters, or offline). Pass --public-host <host:port> with this computer’s address and restart the service.',
+  syncPairNoTls:
+    'The server has no TLS certificate right now, so this code would not work: the phone only accepts an address that carries a certificate fingerprint (plaintext non-loopback is rejected outright). Generate the certificate on the server first, then pair — run node sync-server/gen-cert.mjs and restart the service over HTTPS (start.ps1 picks up tls/cert.pem automatically).',
   syncPairFingerprintNote: 'Scanning this code carries the certificate fingerprint into the phone — no manual copying.',
   syncGroupChangeHost: 'Change host',
   syncGroupChangeHostHint: 'Only devices marked as host-capable are listed.',
@@ -412,6 +414,7 @@ export const en = {
   syncPairFailCode: 'Bad pairing code: 8 characters, no 0 / O / 1 / I',
   syncPairFailFingerprint:
     'Bad certificate fingerprint: 64 hex digits once the colons are removed',
+  syncPairFailExpiry: 'Bad expiry in the pairing string (x must be Unix seconds, e.g. 1766000000)',
   syncPairExpiredConfirm:
     'That code has expired (older than 10 minutes): ask the computer to "Regenerate" one',
   syncPairNoFingerprint: 'No fingerprint in the string (plaintext HTTP server)',
