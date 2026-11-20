@@ -19,5 +19,3 @@ sync-server/tls/
 dist-apk/
 # 签名私钥：绝不可提交。丢了它就无法覆盖升级已安装的应用
 android/debug.keystore
-# 手机直连对端（lan-peer）的运行期产物：日志、状态文件、本机设备 id
-lan-peer/logs/

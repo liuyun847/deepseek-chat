@@ -54,7 +54,7 @@
  *   页面拿到 uri 后本地画二维码。老的客户端只读 invite.code，多出来的 pair 字段不影响它。
  *
  * 对局域网开放（默认不开）
- *   默认只监听 127.0.0.1。要手机直连必须同时给 --host <非回环> 与 --token：
+ *   默认只监听 127.0.0.1。要让手机连上来必须同时给 --host <非回环> 与 --token：
  *   **非回环监听且没设口令时本进程拒绝启动**（不是警告），因为那等于把整库会话
  *   交给局域网里任何一台机器。
  *   --public-host <host:port> 显式指定「手机该连哪里」，优先于自动枚举网卡；
@@ -63,8 +63,8 @@
  * 存储
  *   一个 JSON 文件，原子写（先写 .tmp 再 rename），写入去抖 200ms，退出前强制落盘。
  *   文件结构：{ format, version, updatedAt, records: { "kind:id": record } }
- *   读：/api/{health,state,sync} 处理前先 stat 一次（mtime+size），文件被外部改过（lan-peer 的
- *   P2P 合并、手工编辑、另一个实例）就重读并按 LWW 并进内存 —— **数据文件被外部更新后不需要
+ *   读：/api/{health,state,sync} 处理前先 stat 一次（mtime+size），文件被外部改过（
+ *   手工编辑、另一个实例）就重读并按 LWW 并进内存 —— **数据文件被外部更新后不需要
  *   重启本服务**。读失败（正被原子 rename 替换）最多重试 3 次，仍失败就先用内存视图应答。
  */
 
@@ -627,7 +627,7 @@ let flushTimer = null
 let writeChain = Promise.resolve()
 /**
  * 内存这份视图对应磁盘上的哪个版本，形如 `<mtimeMs>:<size>`；null 表示还没跟磁盘对过账。
- * 用途见 reconcileWithDisk：指纹不一致 = 文件被外部改过（lan-peer 的 P2P 合并、手工编辑、
+ * 用途见 reconcileWithDisk：指纹不一致 = 文件被外部改过（手工编辑、
  * 另一个 7788 实例），需要重读。
  */
 let diskSignature = null
@@ -753,7 +753,7 @@ function markDirty() {
 /**
  * 把磁盘上的记录按 LWW 并进内存（是「合并」而不是「整份替换」）。
  *
- * 为什么不是替换：文件可能是一份比内存更旧的快照（例如 lan-peer 读到旧版本后又整份写回），
+ * 为什么不是替换：文件可能是一份比内存更旧的快照（例如另一个实例刚整份写回旧版本），
  * 整份替换会把内存里刚接受、还没落盘的记录悄悄丢掉。按 compareRecords 合并则只做「谁更新
  * 谁赢」，两个方向都不会丢：外部的新记录被采纳，本地更新的记录保留。
  *
@@ -783,7 +783,7 @@ function adoptRecords(incoming) {
 /**
  * 数据文件被外部改过就重读并并进内存 —— **不需要重启本服务**。
  *
- * 触发场景：手机把记录 P2P 推给 lan-peer，lan-peer 原子写同一份 JSON；本服务常驻内存，
+ * 触发场景：手工编辑数据文件、另一个 7788 实例写同一份 JSON；本服务常驻内存，
  * 不主动看文件就永远报着旧数据。这里在每个 /api/{health,state,sync} 处理前先 stat 一次
  * （只 stat、不读内容，开销可忽略），指纹变了才真正重读。
  *
@@ -1353,7 +1353,7 @@ const requestHandler = async (req, res) => {
   }
 
   if (url.pathname === '/api/health' && req.method === 'GET') {
-    // 处理前先对账：手机 P2P 推给 lan-peer 的记录写在文件里，不重读就一直是旧数字
+    // 处理前先对账：外部（手工编辑、另一个实例）写进文件的记录，不重读就一直是旧数字
     await reconcileWithDisk('GET /api/health')
     // 只回协议身份、时间、是否设了口令与计数：主机名、数据文件绝对路径等一律不对外
     // （审计 SHOULD-4）。format 必须保留：客户端的 checkFormat 靠它认出「这是同步服务」。
@@ -1391,7 +1391,7 @@ const requestHandler = async (req, res) => {
   }
 
   if (url.pathname === '/api/sync' && req.method === 'POST') {
-    // 合并前先并进外部改动，否则客户端推上来的记录会盖掉文件里刚到的 P2P 数据
+    // 合并前先并进外部改动，否则客户端推上来的记录会盖掉文件里刚到的外部数据
     await reconcileWithDisk('POST /api/sync')
     let payload
     try {
@@ -1527,7 +1527,7 @@ server.listen(PORT, HOST, () => {
     }
   } else if (pairTarget.reason === 'loopback') {
     console.log('[sync] 扫码配对不可用：只监听 %s，手机连上去等于连自己', HOST)
-    console.log('[sync]   要手机直连：node sync-server/server.mjs --host 0.0.0.0 --token <口令>')
+    console.log('[sync]   要让手机连上来：node sync-server/server.mjs --host 0.0.0.0 --token <口令>')
   } else if (pairTarget.reason === 'no-tls') {
     console.log('[sync] 扫码配对不可用：监听了 %s 但没有 TLS 证书 —— 码里就没有证书指纹', HOST)
     console.log('[sync]   手机端对非回环的明文地址是硬拒绝，画出来必然用不了')

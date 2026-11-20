@@ -5,8 +5,8 @@
   同步链路已切到 HTTPS
   ====================
   多端同步走 https://<主机>:7788，自签证书由配对时记录的 SHA-256 指纹固定
-  （MainActivity.onReceivedSslError 校验）。手机直连（lan-peer）走原生 UDP/TCP，
-  不经过 WebView 的 HTTP 栈，因此这里不再需要放开明文。
+  （MainActivity.onReceivedSslError 校验）。全应用只有 WebView 这一条 HTTP 栈，
+  没有绕开它的原生传输层，因此这里不需要放开明文。
 
   https 完全不受影响：DeepSeek API 走的仍是 https + 系统信任链，系统 CA 一份没动。
   tools\verify-apk.ps1 有对应校验，防止这份配置被改回 true 而没人发现。

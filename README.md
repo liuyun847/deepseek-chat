@@ -68,7 +68,7 @@ The local web service trusts the self-signed cert through `SYNC_CA_FILE` (it aut
 
 - It is a **complete join credential** (equivalent to a password), valid for 10 minutes and single use. Do not screenshot it around and never feed it to an online QR generator. When `x` passes, the page **removes the SVG** (replaced by "expired, regenerate") so nobody is lured into scanning a dead code.
 - Only the server can supply the address inside the code: the page always lives on loopback (`127.0.0.1`), so an address derived from `location.origin` would point the phone at itself. The server returns `pair.uri` in the create-group / invite responses; the page only renders the matrix.
-- **With the default deployment the card cannot be drawn**: `start.ps1` passes no `--host`, so the service listens on loopback only and the card shows a command you can actually run instead. For a direct phone connection restart it in LAN mode: `node sync-server/server.mjs --host 0.0.0.0 --token <passphrase>` — a non-loopback listen without a passphrase is **refused at startup**, not just warned about; behind a reverse proxy, port mapping or domain add `--public-host 192.168.1.5:7788` to say where the phone should connect. The card never shows an address the phone cannot reach (`pair.reachable === false`), and when the server has **no TLS certificate** at all (`pair.reason` is `no-tls`) it draws no code and tells you to generate the certificate first — the phone rejects plaintext non-loopback addresses outright, so such a code would only waste a scan. The one-step equivalent on Windows is `.\sync-server\start.ps1 -Lan` (off by default; the passphrase comes from `-Token`, else `SYNC_TOKEN`, else `.secrets\sync-token.txt`, and the script refuses to start when all three are missing) — the log then says "已对局域网开放" (opened to the LAN).
+- **With the default deployment the card cannot be drawn**: `start.ps1` passes no `--host`, so the service listens on loopback only and the card shows a command you can actually run instead. To let a phone connect, restart it in LAN mode: `node sync-server/server.mjs --host 0.0.0.0 --token <passphrase>` — a non-loopback listen without a passphrase is **refused at startup**, not just warned about; behind a reverse proxy, port mapping or domain add `--public-host 192.168.1.5:7788` to say where the phone should connect. The card never shows an address the phone cannot reach (`pair.reachable === false`), and when the server has **no TLS certificate** at all (`pair.reason` is `no-tls`) it draws no code and tells you to generate the certificate first — the phone rejects plaintext non-loopback addresses outright, so such a code would only waste a scan. The one-step equivalent on Windows is `.\sync-server\start.ps1 -Lan` (off by default; the passphrase comes from `-Token`, else `SYNC_TOKEN`, else `.secrets\sync-token.txt`, and the script refuses to start when all three are missing) — the log then says "已对局域网开放" (opened to the LAN).
 
 The pairing-string parser exists once, in TypeScript (`src/services/sync/pairing.ts`, testable outside the browser); the scan-and-fill flow reuses it. Self-checks: `node tools/pair-qr-sim.mjs` (L1 parsing + L2 matrix golden vectors + L4 server-side address choice + an old-WebView regression, exit code 0 = pass) and `node tools/pair-qr-sim.mjs --parse "<string>"` (prints address / code / fingerprint / expiry).
 
@@ -82,72 +82,13 @@ Order matters: the certificate fingerprint is written **before** `joinGroup`. Th
 
 The decoding half is testable without a phone: `.\tools\qr-decode-check.ps1` compiles **the same `QrDecode.java` that ships in the APK** on the desktop JVM and runs it over the four fixed samples in `tools\qr-samples\` — **both paths** (`RGBLuminanceSource` for images, the padded Y plane with `rowStride` for camera frames) — comparing the decoded text byte for byte and then re-parsing it. The samples come from `node tools/qr-samples/generate.mjs`, which uses the page's own encoder (including a real pairing string and one counter-example).
 
-No restart is needed when the data file changes underneath: the service stats the file on every `/api/health`, `/api/state` and `POST /api/sync` and re-reads it (merging by last-write-wins) when someone else wrote it — so chats that arrive over P2P show up in the browser immediately, without bouncing `sync-server`.
+No restart is needed when the data file changes underneath: the service stats the file on every `/api/health`, `/api/state` and `POST /api/sync` and re-reads it (merging by last-write-wins) when someone else wrote it — so chats written by hand or by another instance show up in the browser immediately, without bouncing `sync-server`.
 
-Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` runs `sync-server\start.ps1` once per logon through a windowless Windows PowerShell 5.1 — same pattern as the web service below (rename it to `.vbs.disabled` to turn it off; its own stderr goes to `sync-server\logs\autostart.err.log`). At autostart it listens on `127.0.0.1:7788` only: phones reach this PC over P2P (`lan-peer`), not through that port. It opens up to the LAN **only** when you restart it explicitly with `--host 0.0.0.0 --token <passphrase>`; then a phone may use either P2P or that HTTPS port directly (see QR pairing above).
+Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-sync.vbs` runs `sync-server\start.ps1` once per logon through a windowless Windows PowerShell 5.1 — same pattern as the web service below (rename it to `.vbs.disabled` to turn it off; its own stderr goes to `sync-server\logs\autostart.err.log`). At autostart it listens on `127.0.0.1:7788` only: phones cannot reach it. It opens up to the LAN **only** when you restart it explicitly with `--host 0.0.0.0 --token <passphrase>`; then a phone connects straight to that HTTPS port (see QR pairing above).
 
 Sync is record-granular last-write-wins: records unique to either side are kept, and when the same record changed on both sides the latest edit wins. Deletions travel as tombstones so deleted chats are not pulled back, and branch fields (`parentId`, `selectedChildId`, `rootMessageId`) are synced verbatim. Attachments sync file details only, not the file itself.
 
-Five record kinds are synced: `session`, `message`, `settings` (the whole device-agnostic settings object as one record — the newest copy wins), `prompt` (one record per system prompt, deletions as tombstones) and `prompt-selection` (which prompt is active, one record; a remote selection pointing at a prompt this device does not have falls back to the default until it arrives). Your **API key, device id, device name and the phone-to-phone passphrase are never synced** — they stay on each device, and incoming settings can never overwrite them. Protocol version is **2**; a v1 client refuses to sync against a v2 server, and a v2 client gets a 400 from a v1 server (upgrade both sides together). Old data files containing only sessions and messages load unchanged. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
-
-## Phone-to-phone (LAN P2P, no server)
-
-Settings → Phone-to-phone: put two phones on the same Wi-Fi and type the **same passphrase** (at least 8 characters) on both. From then on they discover each other and sync automatically — no server, no IP addresses to fill in.
-
-- Discovery: the native layer in the APK (`LanLink.java`) broadcasts over UDP (port 47823) every few seconds — device id, name, TCP port, passphrase fingerprint — and listens for the same from others. Since Android 9, receiving broadcasts requires holding a `WifiManager.MulticastLock` (permission `CHANGE_WIFI_MULTICAST_STATE`); the lock is held while the page is visible and released the moment the app goes to the background, which also stops broadcasting.
-- Transport: each device binds its `ServerSocket` to a random port and does one request/response per TCP connection, framed as a 4-byte big-endian length followed by the body. The body is an encrypted envelope whose only plaintext is device id, request id, timestamp and a random iv.
-- Encryption: the passphrase is stretched with PBKDF2-HMAC-SHA256 (120k rounds, fixed salt) into a 256-bit key; messages are gzipped and sealed with AES-GCM, with the envelope's from/id/ts bound in as AAD. The passphrase itself is never stored — only the derived key. The broadcast "fingerprint" is the first 6 bytes of SHA-256(key): matching fingerprints mean paired. A device with a different passphrase cannot decrypt and therefore never syncs.
-- Merge: the same LWW and tombstone rules as the HTTP channel (`src/services/sync/merge.ts`); only the "authoritative full state" is replaced by "whatever the peer is missing". If both sides share the same data stamp (`stampOf`), no records are sent at all — just one hello.
-- Scheduling: the device with the lexicographically smaller `deviceId` initiates; the other sends a ping when it has something to pull. Local edits trigger a debounced (4 s) push, plus a 45 s version check. Attachments sync file details only, exactly like the HTTP channel.
-
-Layering (the transport never sees plaintext):
-
-```text
-LanLink.java            UDP discovery + TCP framing (bytes only, no app data)
-  ↕ addJavascriptInterface
-shell.js  window.__dsLan   callback queue + Promise plumbing (bulk data is pulled back by the page)
-  ↕
-lan/bridge.ts          typed wrapper around the native bridge
-lan/crypto.ts          PBKDF2 / AES-GCM / fingerprint / gzip, base64
-lan/protocol.ts        envelope and message shapes, time window, data stamp
-lan/transfer.ts        peer-to-peer diff merge (reuses merge.ts decisions)
-lan/exchange.ts        IndexedDB glue (load all, apply, rewrite snapshots)
-lan/engine.ts          orchestration: peer table, auto sync, throttling, self test
-```
-
-With only one phone, Settings → Phone-to-phone → "Self test" sends a ping and a hello to its own TCP port: native accept → page decrypt → encrypted reply, reporting the RTT and whether both data stamps agree. A two-process protocol simulation and a "host process acts as the second phone" interop script live in [tools/lan-sim/README.md](tools/lan-sim/README.md).
-
-Limits (stated up front): this only works inside one subnet — guest Wi-Fi and AP isolation block broadcasts. For cross-subnet or relayed setups keep using the HTTP sync above.
-
-### The PC as a peer
-
-`lan-peer/` makes the desktop a first-class peer of that same protocol, so a phone can sync straight to the PC with no HTTP server in between. Wire format, message types, `PROTO` version and merge rules are untouched — the phone app needs **zero changes**.
-
-```powershell
-# one-time: the passphrase must be identical on both sides (>= 8 chars).
-# start.ps1 reads it from <repo>\.secrets\lan-passphrase.txt (single line, gitignored),
-# or from -Passphrase, or from $env:LAN_PASSPHRASE - never from node's command line.
-notepad .secrets\lan-passphrase.txt
-
-.\lan-peer\start.ps1        # compiles the shared TS modules on first run, starts hidden, self-checks TCP port + broadcast
-.\lan-peer\stop.ps1         # stop; idempotent
-node lan-peer\peer.mjs --passphrase <same one>   # or run it in the foreground to watch the log
-```
-
-Then on the phone: Settings → Phone-to-phone → type the **same passphrase** → save & pair. The PC shows up under “Discovered devices” within ~4 seconds and sync starts on its own (the phone always initiates, because `dev-…` sorts before the PC's `pc-…` id; the PC sends a ping when it has something new to pull).
-
-- Data lives in one JSON file: `sync-server/data/sync-data.json` — the exact file `sync-server/server.mjs` uses (`{format:'chat-demo-sync',version:2,records:{…}}`). Rows that arrived over P2P are therefore visible to the web client as soon as it syncs against 7788, and vice versa. Merging is still LWW + tombstones, so nothing gets resurrected.
-- Writes are “read latest → merge → atomic rename”. If 7788 happens to run at the same time it rewrites the whole file from its own in-memory view, so P2P-only rows can vanish for a while; the peer re-merges them back from its own overlay on the 45 s tick (tombstones still win). Running only one of the two at a time is the clean setup.
-- Multi-NIC: the peer broadcasts on every non-loopback IPv4 interface plus 255.255.255.255. Pass `--iface 192.168.1.10` (an interface address, or that subnet's broadcast address) to pin it to one NIC, e.g. when a VirtualBox host-only adapter is in the way.
-- Same-subnet only: guest Wi-Fi and AP isolation drop broadcasts, so the phone will not discover the PC there.
-- Firewall: allow inbound **UDP 47823** (discovery) and inbound **TCP on the port the peer picked** (random by default; printed at startup and stored in `lan-peer/logs/state.json`, pin it with `--port 47824` if you prefer a fixed rule). Windows' first-run prompt only covers the TCP listener — add the UDP rule by hand:
-
-```powershell
-New-NetFirewallRule -DisplayName 'chat-demo LAN P2P' -Direction Inbound -Protocol UDP -LocalPort 47823 -Action Allow
-New-NetFirewallRule -DisplayName 'chat-demo LAN P2P TCP' -Direction Inbound -Protocol TCP -LocalPort 47824 -Action Allow
-```
-
-Logs: `lan-peer\logs\peer.log` (service), `start.log` (start/stop results), `state.json` (live ports/records/peers — also what `start.ps1` self-checks). The passphrase never appears in any log; only “configured” and the public `pairTag` do. Autostart: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\deepseek-chat-lan-peer.vbs` — rename it to `.vbs.disabled` to disable, same pattern as the web service.
+Five record kinds are synced: `session`, `message`, `settings` (the whole device-agnostic settings object as one record — the newest copy wins), `prompt` (one record per system prompt, deletions as tombstones) and `prompt-selection` (which prompt is active, one record; a remote selection pointing at a prompt this device does not have falls back to the default until it arrives). Your **API key, device id and device name are never synced** — they stay on each device, and incoming settings can never overwrite them. Protocol version is **2**; a v1 client refuses to sync against a v2 server, and a v2 client gets a 400 from a v1 server (upgrade both sides together). Old data files containing only sessions and messages load unchanged. See [sync-server/README.md](sync-server/README.md) for the API and conflict rules.
 
 ## Local web service (browser access + autostart)
 
@@ -178,16 +119,16 @@ The repo can also be packaged as an installable APK: the same `dist/` output is 
 .\tools\setup-toolchain.ps1                     # one-off: JDK 17 + build-tools 35.0.1 + android-35 into %USERPROFILE%\.devtools
 pnpm --config.shell-emulator=true build       # frontend -> dist/
 .\tools\build-apk.ps1                          # -> dist-apk\deepseek-chat.apk
-.\tools\verify-apk.ps1                         # 34 assertions on the artifact
+.\tools\verify-apk.ps1                         # assertions on the artifact
 adb install -r dist-apk\deepseek-chat.apk
 ```
 
 - The API key can be **baked in at build time** from a local secret file: put the key in `.secrets/api-key.txt` (single line, git-ignored) and the next `pnpm build` injects it into the main bundle — the APK and the static site then work right after installing/opening, with no setup. Without that file the build falls back to the original flow: enter the key in Settings, where it is stored in localStorage of the app origin. A key entered in Settings always wins over the built-in one, and `tools\verify-apk.ps1` checks the packaged key against the secret file (fingerprint only, never the key itself). **`build:web`, used by the local web service, deliberately injects no key** (see the section above) — package APKs from the default `pnpm build`.
 - Package name stays `ds.app` and the signing key is `android\debug.keystore` (git-ignored), so a new APK can be installed **over** an existing install. Lose that keystore and you must uninstall first, which wipes local chats.
 - `versionName` comes from `package.json`; `versionCode` is `major*10000 + minor*100 + patch` (so 0.3.0 → 300). Bump `package.json` before shipping.
-- `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), **exactly three** permissions: `INTERNET`, `CHANGE_WIFI_MULTICAST_STATE` (the multicast lock used by phone-to-phone discovery; normal level, granted at install) and `CAMERA` (QR pairing; dangerous level, so the system dialog appears the first time you tap "Scan QR code"). A camera is not required to install: the manifest declares `uses-feature android.hardware.camera required="false"`, so camera-less devices install fine and the scanner drops straight to "Pick an image"; denying the permission does not crash either — same fallback. `tools\verify-apk.ps1` asserts "exactly 3", "CAMERA declared" and "camera not required".
+- `minSdk 26`, `targetSdk 34` (35 forces edge-to-edge on Android 15), **exactly two** permissions: `INTERNET` and `CAMERA` (QR pairing; dangerous level, so the system dialog appears the first time you tap "Scan QR code"). A camera is not required to install: the manifest declares `uses-feature android.hardware.camera required="false"`, so camera-less devices install fine and the scanner drops straight to "Pick an image"; denying the permission does not crash either — same fallback. `tools\verify-apk.ps1` asserts "exactly 2", "CAMERA declared" and "camera not required".
 - **One third-party binary**: `android\libs\zxing-core-3.5.3.jar` (Apache-2.0, used only to turn camera frames / images into QR strings — see [android/libs/README.md](android/libs/README.md)). This is the **single exception** to "no third-party libraries (AndroidX included)": it is a plain jar (no AAR, no resources, no transitive dependencies), so it only has to be added to `javac -classpath` and to the `d8` inputs in `tools\build-apk.ps1` — the zero-Gradle chain stays intact. It costs `classes.dex` 42 KB → ~590 KB (APK-internal compressed +274 KB) and the APK 1.87 → 2.15 MB; phase 2's M4 (`ScanActivity` + `QrDecode`) adds another ~22 KB of dex on top. The full licence ships as `android\libs\LICENSE-APACHE-2.0.txt` (Apache-2.0 §4 requires it when distributing) — keep it with any redistributed APK.
-- `android/` holds the shell: `MainActivity.java` (assets serving, external links, file picker, SAF export, back key), `LanLink.java` (LAN discovery over UDP broadcast + TCP request/response), `shell.js` (page-side patch: back key, blob downloads, and runtime polyfills for old WebViews; `serveAsset` inserts it as a classic `<script>` at the top of the entry HTML's `<head>`, so it runs before the deferred main bundle), `res/`, `AndroidManifest.xml`. Nothing in `src/` or `rspack.config.ts` is Android-specific: the shell works because the build uses `publicPath: 'auto'`.
+- `android/` holds the shell: `MainActivity.java` (assets serving, external links, file picker, SAF export, back key), `shell.js` (page-side patch: back key, blob downloads, and runtime polyfills for old WebViews; `serveAsset` inserts it as a classic `<script>` at the top of the entry HTML's `<head>`, so it runs before the deferred main bundle), `res/`, `AndroidManifest.xml`. Nothing in `src/` or `rspack.config.ts` is Android-specific: the shell works because the build uses `publicPath: 'auto'`.
 - Old WebViews (measured on WebView 91) cannot parse syntax Mermaid's bundle needs (it ships `class` static blocks), so importing that chunk throws a SyntaxError. `src/services/markdown/mermaid.ts` therefore probes capabilities first: when unsupported the diagram falls back to a plain code block labelled "Diagrams are not supported in this environment" and the mermaid chunk is never requested; when supported nothing changes (still lazy-loaded).
 
 ## Development
@@ -214,7 +155,7 @@ src/
     api/               API requests, SSE, and protocol types
     chat/              Conversations, message branches, storage, and history import/export
     markdown/          Markdown parsing, syntax highlighting, and diagrams
-    sync/              Multi-device sync (HTTP channel + phone-to-phone LAN P2P);
+    sync/              Multi-device sync (HTTPS channel);
                        settings / prompts / prompt-selection live in sync/local.ts
   utils/               Shared utilities
 ```

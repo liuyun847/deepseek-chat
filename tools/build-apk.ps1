@@ -198,8 +198,8 @@ if ($LASTEXITCODE -ne 0) { throw '修正 APK 路径失败' }
 Step 4 '编译 Java (javac)'
 $classes = Join-Path $Build 'classes'
 New-Item -ItemType Directory -Force -Path $classes | Out-Null
-# 源文件按目录枚举而不是写死 MainActivity：局域网直连的传输层在 LanLink.java 里，
-# 以后再加类也不用改脚本。R.java 由 aapt2 生成在 $rJava 下，同样收进来。
+# 源文件按目录枚举而不是写死 MainActivity：以后再加类也不用改脚本。
+# R.java 由 aapt2 生成在 $rJava 下，同样收进来。
 $sources = @(Get-ChildItem (Join-Path $Root 'android\java') -Recurse -Filter *.java |
     ForEach-Object { $_.FullName }) +
     @(Get-ChildItem $rJava -Recurse -Filter *.java | ForEach-Object { $_.FullName })
