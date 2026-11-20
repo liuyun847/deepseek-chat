@@ -87,6 +87,40 @@ const SYNC_CA_PEM = (() => {
   }
 })()
 /**
+ * 同步服务的访问口令文件：与 sync-server/start.ps1 -Lan 的第三个来源是同一份（.secrets 已 gitignore）。
+ * 局域网模式下 7788 的所有 /api/* 都要口令，而同源反代 /sync/api/* 是浏览器唯一的通道，
+ * 口令不在这里补上，页面就会整片 401。
+ */
+const SYNC_TOKEN_FILE = path.join(ROOT, '.secrets', 'sync-token.txt')
+
+/**
+ * 读同步口令：先 .secrets/sync-token.txt 首行，其次 SYNC_TOKEN 环境变量。
+ *
+ * 为什么文件优先：文件是持久化的事实来源（start.ps1 -Lan 最终也是它），环境变量可能属于
+ * 父进程、与 7788 实际用的那份不一致；两者不一致时反代会全线 401，而这种错很难看出来。
+ *
+ * @returns {string} 口令；空串表示上游没开口令（回环模式），反代不注入
+ * @sideeffect 只读文件，不打印口令
+ */
+const readSyncToken = () => {
+  const candidates = []
+  try {
+    candidates.push(readFileSync(SYNC_TOKEN_FILE, 'utf8').split(/\r?\n/)[0].trim())
+  } catch {
+    // 文件不存在：没配口令
+  }
+  candidates.push((process.env.SYNC_TOKEN ?? '').trim())
+  for (const value of candidates) {
+    if (value && !/\s/.test(value)) {
+      return value
+    }
+  }
+  return ''
+}
+
+/** 反代给上游补的 Bearer 口令（空串 = 不注入，行为与改造前一致） */
+const SYNC_PROXY_TOKEN = readSyncToken()
+/**
  * 同步反代前缀：浏览器打同源 /sync/api/*，本服务把这段前缀换成上游的 /api/*。
  * 前端（src/services/sync/api.ts）把同源服务地址算成 http://127.0.0.1:<port>/sync，
  * 拼上它固定的 /api/health 正好落到这里。
@@ -708,6 +742,12 @@ const proxyToSync = (req, res, upstreamPath) => {
       headers[name] = value
     }
   }
+  // 局域网模式下 7788 的 /api/* 一律要口令，而页面这边只会带设备令牌（甚至什么都不带）：
+  // 命令行走 /sync/api/* 的请求在这里补一个 Bearer，页面零改动。
+  // 请求自己带了 Authorization / X-Sync-Token 时不动它 —— 设备令牌优先，别用主口令盖掉。
+  if (SYNC_PROXY_TOKEN && !headers.authorization && !headers['x-sync-token']) {
+    headers.authorization = 'Bearer ' + SYNC_PROXY_TOKEN
+  }
 
   /**
    * 请求体读完后打上游，响应边收边写。
@@ -1026,6 +1066,12 @@ server.on('error', (error) => {
 server.listen(port, host, () => {
   log('info', '本机服务已启动：http://' + host + ':' + port + '（上游 ' + UPSTREAM + '）')
   log('info', '同步反代 ' + SYNC_PREFIX + '/* → ' + syncUpstream.origin + '/api/*')
+  log(
+    'info',
+    SYNC_PROXY_TOKEN
+      ? '同步反代鉴权：已加载口令（缺鉴权头的请求自动补 Bearer；口令本身不打印）'
+      : '同步反代鉴权：未配口令（上游按回环无口令运行）'
+  )
   if (syncUpstream.protocol === 'https:') {
     log(
       'info',
