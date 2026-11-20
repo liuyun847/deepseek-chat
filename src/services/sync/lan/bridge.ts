@@ -63,8 +63,6 @@ type LanShim = {
 
 declare global {
   interface Window {
-    /** 安卓壳注入的原生桥；浏览器里不存在 */
-    __DS_BRIDGE__?: Partial<LanNativeBridge> & { platform?: () => string }
     /** 壳层 shim；浏览器里不存在 */
     __dsLan?: LanShim
   }
@@ -82,7 +80,8 @@ export class LanError extends Error {
 }
 
 const nativeBridge = (): LanNativeBridge | null => {
-  const bridge = window.__DS_BRIDGE__
+  // __DS_BRIDGE__ 的全局声明已搬到 services/sync/tls.ts（与指纹桥共用一处，避免 TS2717）
+  const bridge = window.__DS_BRIDGE__ as Partial<LanNativeBridge> | undefined
   if (!bridge || typeof bridge.lanStart !== 'function' || typeof bridge.lanTake !== 'function') {
     return null
   }
