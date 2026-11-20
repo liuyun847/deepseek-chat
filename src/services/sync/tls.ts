@@ -46,6 +46,13 @@ declare global {
   interface Window {
     /** 安卓壳注入的指纹桥；浏览器里不存在 */
     __dsSync?: SyncTlsShim
+    /**
+     * 安卓壳注入的原生桥（MainActivity.Bridge）；浏览器里不存在。
+     *
+     * 声明放在这里而不是各使用点：同一个全局对象被多个文件各声明一次，TS 会判成
+     * 「同名属性类型冲突」（TS2717）。这里只声明同步侧用得到的那几个方法，不穷举。
+     */
+    __DS_BRIDGE__?: SyncTlsNativeBridge & { platform?: () => string }
   }
 }
 

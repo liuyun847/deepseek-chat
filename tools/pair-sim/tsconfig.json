@@ -1,7 +1,7 @@
 {
   // 配对串工具（tools/pair-qr-sim.mjs）的编译配置：只编「纯逻辑」那几层，不碰 React 组件。
   // 产物在 build/ 下（已 gitignore），由 pair-qr-sim.mjs 直接 import（Node 24 的 ESM）。
-  // 与 tools/lan-sim/tsconfig.json 同一套范式。
+  // 全仓唯一的子集编译配置：根 tsconfig.json 管全量，这里只收窄 include 到工具用得到的那几层。
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
@@ -20,10 +20,6 @@
     "../../src/services/sync/pairing.ts",
     "../../src/services/sync/api.ts",
     "../../src/services/sync/tls.ts",
-    "../../src/services/localService.ts",
-    // 只为它的 `declare global { interface Window { __DS_BRIDGE__ } }`：tls.ts 用到这座桥
-    // 但没自己声明，主 tsconfig 里两个文件同在一个 program 才不报错。少了这一行，
-    // 只编子集时会报 TS2339 Property '__DS_BRIDGE__' does not exist on type 'Window'。
-    "../../src/services/sync/lan/bridge.ts"
+    "../../src/services/localService.ts"
   ]
 }
