@@ -70,9 +70,9 @@ node sync-server/server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-s
 
 - 它是一次入组的**完整凭据**（等同于密码），有效期 10 分钟、一次性；不要截图外发、不要贴进在线二维码生成器。展示端在 `x` 到期时会把 SVG 从页面上撤掉（换成「已过期 + 重新生成」），避免把人骗去扫一张早就失效的码。
 - 二维码里的地址**只能由服务端给**：网页永远在回环上（`127.0.0.1`），拿 `location.origin` 拼出来的地址手机连上去等于连自己。服务端在 `create`/`invite` 的响应里带 `pair.uri`，页面只负责画矩阵。
-- **默认部署下这张码画不出来**：`start.ps1` 不传 `--host`，服务只监听回环，卡片会改成一条能照做的命令。要手机直连，用局域网模式重启：`node sync-server/server.mjs --host 0.0.0.0 --token <口令>`（局域网**必须**配口令，没口令时服务端直接拒绝启动；反代/端口映射/域名场景再加 `--public-host 192.168.1.5:7788` 指定手机该连哪里）。等价的一步到位写法是 `.sync-serverstart.ps1 -Lan`（默认关闭；口令按 `-Token` > `SYNC_TOKEN` > `.secretssync-token.txt` 的顺序找，三处都没有就拒绝启动），日志里会明确出现 `已对局域网开放`。中继式部署里手机连不上时，卡片也会给出这条命令而不是给一个连不上的地址。
+- **默认部署下这张码画不出来**：`start.ps1` 不传 `--host`，服务只监听回环，卡片会改成一条能照做的命令。要手机直连，用局域网模式重启：`node sync-server/server.mjs --host 0.0.0.0 --token <口令>`（局域网**必须**配口令，没口令时服务端直接拒绝启动；反代/端口映射/域名场景再加 `--public-host 192.168.1.5:7788` 指定手机该连哪里）。等价的一步到位写法是 `.\sync-server\start.ps1 -Lan`（默认关闭；口令按 `-Token` > `SYNC_TOKEN` > `.secrets\sync-token.txt` 的顺序找，三处都没有就拒绝启动），日志里会明确出现 `已对局域网开放`。中继式部署里手机连不上时，卡片也会给出这条命令而不是给一个连不上的地址。反过来，服务端**没有 TLS 证书**时（`pair.reason` 为 `no-tls`）卡片不会画码，只提示「先在服务端生成证书再配对」—— 手机端对非回环的明文地址是硬拒绝，那种码扫了也白扫。
 
-配对串的解析器只有一份且在 TypeScript 里（`src/services/sync/pairing.ts`，可脱离浏览器测），扫码回填复用它；格式的编解码自检跑 `node tools/pair-qr-sim.mjs`（L1 解析 + L2 矩阵黄金向量 + 旧 WebView 回归，退出码 0 通过）与 `node tools/pair-qr-sim.mjs --parse "<串>"`（打印解析出的地址/码/指纹/过期时间）。
+配对串的解析器只有一份且在 TypeScript 里（`src/services/sync/pairing.ts`，可脱离浏览器测），扫码回填复用它；格式的编解码自检跑 `node tools/pair-qr-sim.mjs`（L1 解析 + L2 矩阵黄金向量 + L4 服务端选地址 + 旧 WebView 回归，退出码 0 通过）与 `node tools/pair-qr-sim.mjs --parse "<串>"`（打印解析出的地址/码/指纹/过期时间）。
 
 **手机这一侧（扫码 / 从图片 / 粘贴串）**：设置 → 多端同步 → 「扫码配对」卡片，三条路都走同一个解析器，成功后弹一张确认卡，把「服务地址 / 配对码 / 证书指纹 / 有效期」摊开，点「配对并加入」才真正入组：
 
@@ -82,7 +82,7 @@ node sync-server/server.mjs --tls-cert sync-server\tls\cert.pem --tls-key sync-s
 
 顺序是硬要求：**先写证书指纹、再 `joinGroup`**。WebView 在 TLS 握手阶段就拒自签证书，写晚了的表现是「第一下必然失败、第二下就好了」。失败文案按解析器的 `reason` 逐条不同（串太长 / 不是本应用的码 / 版本不认识 / 地址不合法 / 明文非回环 / 配对码字符不对 / 指纹不是 64 位 / 已过期），不是一句笼统的「配对失败」。
 
-解码这一段可以脱离真机验：`.	oolsqr-decode-check.ps1`（UTF-8 BOM 的 .ps1）用 **APK 里同一份 `QrDecode.java`** 在桌面 JVM 上跑 `toolsqr-samples/` 的 4 张固定样本，**两条路径都跑**（`RGBLuminanceSource` 图库路径、带 `rowStride` 填充的 Y 平面相机路径），逐字符比对后再过一遍解析器。样本由 `node tools/qr-samples/generate.mjs` 用页面同一个编码器生成（含本项目的配对串与一张反例）。
+解码这一段可以脱离真机验：`.\tools\qr-decode-check.ps1`（UTF-8 BOM 的 .ps1）用 **APK 里同一份 `QrDecode.java`** 在桌面 JVM 上跑 `tools\qr-samples\` 的 4 张固定样本，**两条路径都跑**（`RGBLuminanceSource` 图库路径、带 `rowStride` 填充的 Y 平面相机路径），逐字符比对后再过一遍解析器。样本由 `node tools/qr-samples/generate.mjs` 用页面同一个编码器生成（含本项目的配对串与一张反例）。
 
 数据文件被外部更新后**不需要重启 sync-server**：它在 `/api/health`、`/api/state`、`POST /api/sync` 处理前先 stat 一次，发现被别处写过就重读并按 LWW 并进内存——手机 P2P 推来的会话因此立刻能在浏览器看到。
 
