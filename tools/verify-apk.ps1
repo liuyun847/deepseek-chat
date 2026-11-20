@@ -10,7 +10,7 @@
       3. resources.arsc 必须未压缩且 4 字节对齐（targetSdk 30+ 的硬要求）
       4. 签名方案有效（v2 / v3）
       5. manifest 的包名 / 版本 / minSdk / targetSdk / 权限 / 启动 Activity 正确
-      6. networkSecurityConfig 在位且只信任系统 CA（局域网同步依赖明文放行）
+      6. networkSecurityConfig 在位且只信任系统 CA（明文全禁，HTTPS 同步依赖它）
 
 .EXAMPLE
     .\tools\verify-apk.ps1
@@ -157,14 +157,11 @@ Test-Ok ($badging -match ("versionName='" + [regex]::Escape($verName) + "'")) "v
 Test-Ok ($badging -match "sdkVersion:'26'") 'minSdk 26'
 Test-Ok ($badging -match "targetSdkVersion:'34'") 'targetSdk 34'
 Test-Ok ($badging -match 'android\.permission\.INTERNET') '已声明 INTERNET 权限'
-# 局域网直连用 WifiManager.createMulticastLock() 收广播，必须有这条 normal 级权限，
-# 否则广播只发不收（表现为「别人看得见我、我看不见别人」）。
-Test-Ok ($badging -match 'android\.permission\.CHANGE_WIFI_MULTICAST_STATE') '已声明 CHANGE_WIFI_MULTICAST_STATE 权限（组播锁）'
 $permCount = ([regex]::Matches($badging, 'uses-permission:')).Count
 # 扫码配对要 Camera2 预览：CAMERA 是 dangerous 权限（targetSdk 34 必须运行时申请，
 # 见 ScanActivity.ensurePermissionThenOpen）。它是本项目唯一会弹系统对话框的权限。
 Test-Ok ($badging -match 'android\.permission\.CAMERA') '已声明 CAMERA 权限（扫码）'
-Test-Ok ($permCount -eq 3) "权限正好 3 条：INTERNET + CHANGE_WIFI_MULTICAST_STATE + CAMERA（实际 $permCount 条）"
+Test-Ok ($permCount -eq 2) "权限正好 2 条：INTERNET + CAMERA（实际 $permCount 条）"
 # required=false 在 badging 里是单独一行 uses-feature-not-required：
 # 它保证「无相机的设备也能装」，扫码界面此时只剩「从图片选择」。
 Test-Ok ($badging -match 'uses-feature-not-required:\s*name=.android\.hardware\.camera.') '相机声明为非必需（无相机设备仍可安装）'

@@ -19,8 +19,8 @@
     切换步骤。要切 HTTPS：先 .\local-server\stop.ps1，再 node sync-server\gen-cert.mjs，
     然后重启 sync-server 与 local-server（两个都得重启，只重启一个反而会错配）。
 
-  默认只监听回环：不传 --host，server.mjs 默认就是 127.0.0.1。手机走 P2P（lan-peer）
-  不经过它；对局域网开放只会多一个读写全库的口子，所以默认关闭。
+  默认只监听回环：不传 --host，server.mjs 默认就是 127.0.0.1，手机连不进来；
+  对局域网开放只会多一个读写全库的口子，所以默认关闭。
 
   对局域网开放（-Lan，默认关闭）：等价于 --host 0.0.0.0 + 必需口令。
     口令来源（按顺序）：-Token 参数 > SYNC_TOKEN 环境变量 > .secrets 目录下 sync-token.txt 首行。
